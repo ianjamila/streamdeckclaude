@@ -1,11 +1,12 @@
 {
   "name": "com.aaronholt.claude-usage",
-  "version": "1.1.0",
+  "version": "1.4.0",
   "description": "Live Claude Code usage on three Stream Deck keys.",
   "main": "com.aaronholt.claude-usage.sdPlugin/bin/plugin.js",
   "type": "module",
   "scripts": {
-    "build": "rollup -c",
+    "build:native": "node native/build.mjs",
+    "build": "node native/build.mjs && rollup -c",
     "watch": "rollup -c -w --watch.onEnd=\"streamdeck restart com.aaronholt.claude-usage\""
   },
   "author": "Aaron Holt",

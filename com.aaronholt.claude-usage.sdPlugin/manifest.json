@@ -1,8 +1,8 @@
 {
   "Name": "Claude Usage",
-  "Version": "1.1.0.0",
+  "Version": "1.8.0.0",
   "Author": "Aaron Holt",
-  "Description": "Live Claude usage on four keys: current 5-hour session, weekly all-models, weekly scoped-model (auto-labelled), and monthly extra credits.",
+  "Description": "Live Claude usage for one or two Claude Code accounts (session, weekly all-models, weekly scoped-model, extra credits — pick the account per key) plus Codex CLI usage, a Peak Hours key, and CPU load / CPU temperature keys.",
   "Icon": "imgs/plugin/marketplace",
   "Category": "Claude Usage",
   "CategoryIcon": "imgs/plugin/category",
@@ -42,7 +42,8 @@
           "TitleAlignment": "middle",
           "ShowTitle": false
         }
-      ]
+      ],
+      "PropertyInspectorPath": "ui/account.html"
     },
     {
       "Name": "Weekly (All Models)",
@@ -59,7 +60,8 @@
           "TitleAlignment": "middle",
           "ShowTitle": false
         }
-      ]
+      ],
+      "PropertyInspectorPath": "ui/account.html"
     },
     {
       "Name": "Weekly (Scoped Model)",
@@ -76,7 +78,8 @@
           "TitleAlignment": "middle",
           "ShowTitle": false
         }
-      ]
+      ],
+      "PropertyInspectorPath": "ui/account.html"
     },
     {
       "Name": "Extra Usage Credits",
@@ -90,6 +93,77 @@
       "States": [
         {
           "Image": "imgs/actions/extra-usage/key",
+          "TitleAlignment": "middle",
+          "ShowTitle": false
+        }
+      ],
+      "PropertyInspectorPath": "ui/account.html"
+    },
+    {
+      "Name": "Peak Hours",
+      "UUID": "com.aaronholt.claude-usage.peak-hours",
+      "Icon": "imgs/actions/peak-hours/icon",
+      "Tooltip": "Whether Claude peak hours (Mon–Fri 5–11 AM Pacific) are on now, with a countdown to the next change. Tap to open claude-peak-time.pages.dev.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "States": [
+        {
+          "Image": "imgs/actions/peak-hours/key",
+          "TitleAlignment": "middle",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "Name": "Codex Usage",
+      "UUID": "com.aaronholt.claude-usage.codex",
+      "Icon": "imgs/actions/codex/icon",
+      "Tooltip": "OpenAI Codex CLI usage (weekly or 5-hour limit), read from Codex's local logs. Tap to open Codex usage settings.",
+      "PropertyInspectorPath": "ui/codex.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "States": [
+        {
+          "Image": "imgs/actions/codex/key",
+          "TitleAlignment": "middle",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "Name": "CPU Load",
+      "UUID": "com.aaronholt.claude-usage.cpu-usage",
+      "Icon": "imgs/actions/cpu-usage/icon",
+      "Tooltip": "Total CPU load across all cores, refreshed every 2 seconds, with a one-minute graph. Underneath: the 1-minute load average out of your core count. Tap to open Activity Monitor.",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "States": [
+        {
+          "Image": "imgs/actions/cpu-usage/key",
+          "TitleAlignment": "middle",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "Name": "CPU Temperature",
+      "UUID": "com.aaronholt.claude-usage.cpu-temp",
+      "Icon": "imgs/actions/cpu-temp/icon",
+      "Tooltip": "CPU temperature from the Mac’s sensors (average or hottest core, °C or °F), refreshed every 2 seconds. Tap to open Activity Monitor.",
+      "PropertyInspectorPath": "ui/cpu-temp.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "States": [
+        {
+          "Image": "imgs/actions/cpu-temp/key",
           "TitleAlignment": "middle",
           "ShowTitle": false
         }

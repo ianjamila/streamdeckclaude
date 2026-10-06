@@ -5,13 +5,22 @@ Four Stream Deck keys mirroring the **Plan usage limits** panel on `claude.ai/se
 | Key | Shows | Refresh |
 |---|---|---|
 | **Current Session** | `NN%` of your active 5-hour session + reset countdown | 3 min |
-| **Weekly (All Models)** | `NN%` of your rolling 7-day all-models limit + reset countdown | 10 min |
-| **Weekly (Scoped Model)** | `NN%` of the model-specific weekly limit your account has (Fable, Sonnet, etc — auto-labelled) | 10 min |
-| **Extra Usage Credits** | `NN%` of your monthly extra credits + `used / limit` in your currency | 10 min |
+| **Weekly (All Models)** | `NN%` of your rolling 7-day all-models limit + reset countdown | 3 min |
+| **Weekly (Scoped Model)** | `NN%` of the model-specific weekly limit your account has (Fable, Sonnet, etc — auto-labelled) | 3 min |
+| **Extra Usage Credits** | `NN%` of your monthly extra credits + `used / limit` in your currency | 3 min |
 
-The percentage flips to coral when over 80%. Tap any key to open `claude.ai/settings/usage` in your browser. If the data fetch fails, the key turns into a coral `!`.
+The percentage flips to coral when over 80%. Tap any key to open `claude.ai/settings/usage` — on macOS in the Chrome profile for that key's account (signed in to the account's email, or the profile folder typed in the key's settings), so ME and EWI each open already signed in. Set *Tap opens in* to *Default browser* to skip Chrome. If the data fetch fails, the key turns into a coral `!`.
 
 The numbers come straight from Anthropic's own usage endpoint — the same data your Settings page shows.
+
+### CPU keys
+
+| Key | Shows | Refresh |
+|---|---|---|
+| **CPU Load** | `NN%` of all cores, over a one-minute graph; underneath, `load N/cores` = the 1-minute load average (tasks running or waiting) out of your core count — over the core count means work is queueing | 2 s |
+| **CPU Temperature** | average CPU temperature + hottest core (swap which is big, and °C/°F, in the key's settings), over a one-minute graph | 2 s |
+
+Tap either key to open Activity Monitor. Temperature comes from the Mac's SMC sensors via a small bundled helper (`native/cputemp.c`, built by `npm run build` into `bin/cputemp`) — no admin rights, no network. It runs only while a CPU key is on screen and exits when the plugin stops. On Windows the CPU Load key works; CPU Temperature shows "macOS only".
 
 ## Install
 

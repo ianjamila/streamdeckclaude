@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
+  <rect width="144" height="144" fill="#0a0a0a"/>
+  <g transform="translate(118 10) scale(0.9)" fill="none" stroke="#8ea2ff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4 L9 10 L2 16"/><path d="M11 17 H19"/></g>
+  <text x="72" y="80" text-anchor="middle" font-family="'SF Mono',Menlo,Consolas,monospace" font-weight="700" font-size="32" fill="#ffffff">--%</text>
+  <text x="72" y="120" text-anchor="middle" font-family="'SF Mono',Menlo,Consolas,monospace" font-weight="600" font-size="11" letter-spacing="2" fill="#8ea2ff">CODEX</text>
+</svg>

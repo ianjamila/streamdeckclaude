@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        padding: 12px 16px;
+        background: #2d2d2d;
+        color: #d8d8d8;
+        font: 13px -apple-system, "Segoe UI", Arial, sans-serif;
+      }
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      label {
+        flex: 0 0 90px;
+        text-align: right;
+      }
+      select,
+      input {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 6px;
+        background: #3d3d3d;
+        color: #d8d8d8;
+        border: 1px solid #555;
+        border-radius: 3px;
+        font: inherit;
+      }
+      .hint {
+        margin: 4px 0 0 102px;
+        color: #9a9a9a;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="item">
+      <label for="account">Account</label>
+      <!-- Keep values in sync with ACCOUNTS in src/accounts.ts. -->
+      <select id="account">
+        <option value="me">ME — jamilaian21@gmail.com</option>
+        <option value="ew">EWI — eaglewatch9002@eaglewatch.ph</option>
+      </select>
+    </div>
+    <p class="hint">EWI reads the login from <code>claude-ew</code> (~/.claude-eaglewatch).</p>
+
+    <div class="item">
+      <label for="openIn">Tap opens in</label>
+      <select id="openIn">
+        <option value="chrome">Chrome profile for this account</option>
+        <option value="default">Default browser</option>
+      </select>
+    </div>
+    <div class="item" id="profileRow">
+      <label for="chromeProfile">Chrome profile</label>
+      <input id="chromeProfile" type="text" spellcheck="false" />
+    </div>
+    <p class="hint" id="profileHint">
+      Blank = the profile signed in to this account's email. Or type the profile folder
+      (e.g. <code>Profile 1</code>) — it's the end of “Profile Path” on
+      <code>chrome://version</code> in that profile.
+    </p>
+
+    <script>
+      // Stream Deck calls this global when the Property Inspector opens.
+      function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
+        // Keep in sync with the emails in ACCOUNTS (src/accounts.ts).
+        const EMAILS = { me: "jamilaian21@gmail.com", ew: "eaglewatch9002@eaglewatch.ph" };
+        const select = document.getElementById("account");
+        const openIn = document.getElementById("openIn");
+        const profile = document.getElementById("chromeProfile");
+        const settings = (JSON.parse(actionInfo).payload || {}).settings || {};
+        select.value = settings.account || "me";
+        openIn.value = settings.openIn || "chrome";
+        profile.value = settings.chromeProfile || "";
+
+        function refresh() {
+          profile.placeholder = EMAILS[select.value] || "";
+          const chrome = openIn.value === "chrome";
+          document.getElementById("profileRow").style.display = chrome ? "" : "none";
+          document.getElementById("profileHint").style.display = chrome ? "" : "none";
+        }
+        refresh();
+
+        const ws = new WebSocket("ws://127.0.0.1:" + port);
+        ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+        function save() {
+          settings.account = select.value;
+          settings.openIn = openIn.value;
+          settings.chromeProfile = profile.value.trim();
+          refresh();
+          ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+        }
+        select.addEventListener("change", save);
+        openIn.addEventListener("change", save);
+        profile.addEventListener("change", save);
+      }
+    </script>
+  </body>
+</html>

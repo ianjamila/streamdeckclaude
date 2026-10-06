@@ -1,59 +1,14 @@
-import {
-  action,
-  SingletonAction,
-  type JsonObject,
-  type KeyAction,
-  type KeyDownEvent,
-  type WillAppearEvent,
-  type WillDisappearEvent,
-} from "@elgato/streamdeck";
-import { getUsage, invalidateUsageCache } from "../usage.js";
-import {
-  formatPercent,
-  formatUsedOfLimit,
-  renderError,
-  renderKey,
-  renderLoading,
-} from "../render.js";
-import { openSettings } from "../open-settings.js";
-
-const REFRESH_MS = 10 * 60_000;
-
-type Settings = JsonObject;
+import { action } from "@elgato/streamdeck";
+import type { UsageResponse } from "../usage.js";
+import { formatPercent, formatUsedOfLimit, renderKey } from "../render.js";
+import { UsageKeyAction } from "./usage-key.js";
 
 @action({ UUID: "com.aaronholt.claude-usage.extra-usage" })
-export class ExtraUsageAction extends SingletonAction<Settings> {
-  private readonly timers = new Map<string, NodeJS.Timeout>();
+export class ExtraUsageAction extends UsageKeyAction {
+  protected readonly label = "EXTRA";
 
-  override async onWillAppear(ev: WillAppearEvent<Settings>): Promise<void> {
-    if (!ev.action.isKey()) return;
-    await ev.action.setImage(renderLoading("EXTRA"));
-    await this.tick(ev.action);
-    const t = setInterval(() => {
-      void this.tick(ev.action as KeyAction<Settings>);
-    }, REFRESH_MS);
-    this.timers.set(ev.action.id, t);
-  }
-
-  override onWillDisappear(ev: WillDisappearEvent<Settings>): void {
-    const t = this.timers.get(ev.action.id);
-    if (t) clearInterval(t);
-    this.timers.delete(ev.action.id);
-  }
-
-  override async onKeyDown(ev: KeyDownEvent<Settings>): Promise<void> {
-    invalidateUsageCache();
-    if (ev.action.isKey()) void this.tick(ev.action);
-    await openSettings();
-  }
-
-  private async tick(action: KeyAction<Settings>): Promise<void> {
-    const r = await getUsage();
-    if (!r.ok) {
-      await action.setImage(renderError("EXTRA"));
-      return;
-    }
-    const e = r.data.extra_usage;
+  protected render(data: UsageResponse, badge: string, stale?: string): string {
+    const e = data.extra_usage;
     if (
       !e ||
       !e.is_enabled ||
@@ -62,19 +17,16 @@ export class ExtraUsageAction extends SingletonAction<Settings> {
       typeof e.monthly_limit !== "number" ||
       !e.currency
     ) {
-      await action.setImage(
-        renderKey({ big: "off", label: "EXTRA", subtitle: "not enabled" })
-      );
-      return;
+      return renderKey({ big: "off", label: this.label, subtitle: "not enabled", badge, stale });
     }
     const pct = e.utilization;
-    await action.setImage(
-      renderKey({
-        big: formatPercent(pct),
-        label: "EXTRA",
-        subtitle: formatUsedOfLimit(e.used_credits, e.monthly_limit, e.currency),
-        accent: pct > 80,
-      })
-    );
+    return renderKey({
+      big: formatPercent(pct),
+      label: this.label,
+      subtitle: formatUsedOfLimit(e.used_credits, e.monthly_limit, e.currency),
+      accent: pct > 80,
+      badge,
+      stale,
+    });
   }
 }

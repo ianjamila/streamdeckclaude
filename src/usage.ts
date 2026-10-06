@@ -1,9 +1,22 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, constants, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import streamDeck from "@elgato/streamdeck";
+import {
+  ACCOUNTS,
+  credentialsFile,
+  DEFAULT_ACCOUNT,
+  keychainService,
+  type Account,
+} from "./accounts.js";
 
-const CREDENTIALS_PATH = join(homedir(), ".claude", ".credentials.json");
+// On macOS Claude Code keeps its OAuth credentials in the login Keychain
+// instead of the JSON file. The first read may trigger a macOS "allow access"
+// prompt; choose Always Allow. Generous timeout so that prompt can be answered.
+const KEYCHAIN_TIMEOUT_MS = 120_000;
+const execFileAsync = promisify(execFile);
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const REFRESH_URL = "https://console.anthropic.com/v1/oauth/token";
 const BETA_HEADER = "oauth-2025-04-20";
@@ -18,6 +31,22 @@ const REFRESH_FAILURE_COOLDOWN_MS = 15 * 60_000;
 // If the last successful fetch was longer than this ago, assume the machine
 // just woke from sleep and clear any active cooldown so we can recover fast.
 const SLEEP_GAP_MS = 30 * 60_000;
+// An expired Keychain token is renewed by running Claude Code (see
+// renewViaClaudeCode). At most once per account per this window, so a
+// broken login doesn't start Claude Code on every tick.
+const RENEW_COOLDOWN_MS = 10 * 60_000;
+const RENEW_TIMEOUT_MS = 30_000;
+// Stream Deck starts the plugin with a minimal PATH, so look for Claude Code
+// where its installers put it. Mid-update the npm launcher briefly vanishes,
+// hence the package binary as a fallback.
+const CLAUDE_BINARIES = [
+  join(homedir(), ".npm-global/bin/claude"),
+  join(homedir(), ".npm-global/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"),
+  join(homedir(), ".local/bin/claude"),
+  join(homedir(), ".claude/local/claude"),
+  "/opt/homebrew/bin/claude",
+  "/usr/local/bin/claude",
+];
 
 type Bucket = { utilization: number; resets_at: string | null } | null;
 
@@ -91,23 +120,115 @@ type Ok<T> = { ok: true; data: T };
 type Err = { ok: false; reason: string };
 export type Result<T> = Ok<T> | Err;
 
-let cached: { value: Result<UsageResponse>; fetchedAt: number } | undefined;
-let inflight: Promise<Result<UsageResponse>> | undefined;
-let refreshCooldownUntil = 0;
-let lastSuccessAt = 0;
+// Everything below is per account: each login has its own token, its own
+// rate limit and its own cache, so one account failing never blanks the other.
+type AccountState = {
+  cached?: { value: Result<UsageResponse>; fetchedAt: number };
+  inflight?: Promise<Result<UsageResponse>>;
+  refreshCooldownUntil: number;
+  lastSuccessAt: number;
+  renewAttemptAt: number;
+  // Newest good response, kept so a tile can show it (marked old) through
+  // a temporary failure instead of flipping to "!".
+  lastGood?: UsageResponse;
+};
 
-async function readCredentials(): Promise<Credentials> {
-  const raw = await readFile(CREDENTIALS_PATH, "utf8");
-  return JSON.parse(raw) as Credentials;
+const states = new Map<string, AccountState>();
+
+function stateFor(account: Account): AccountState {
+  let s = states.get(account.id);
+  if (!s) {
+    s = { refreshCooldownUntil: 0, lastSuccessAt: 0, renewAttemptAt: 0 };
+    states.set(account.id, s);
+  }
+  return s;
 }
 
-async function writeCredentials(creds: Credentials): Promise<void> {
-  await writeFile(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), "utf8");
+// Where the credentials came from. Keychain credentials are read-only: the
+// refresh token rotates on use, so refreshing here without writing back to the
+// Keychain would leave Claude Code holding a dead refresh token (signed out).
+// Claude Code refreshes its own token whenever it runs; we just re-read it.
+type CredentialSource = "file" | "keychain";
+
+async function readKeychainCredentials(account: Account): Promise<Credentials> {
+  const { stdout } = await execFileAsync(
+    "/usr/bin/security",
+    ["find-generic-password", "-s", keychainService(account), "-w"],
+    { timeout: KEYCHAIN_TIMEOUT_MS }
+  );
+  return JSON.parse(stdout.trim()) as Credentials;
 }
 
-async function refreshAccessToken(creds: Credentials): Promise<Credentials> {
-  if (Date.now() < refreshCooldownUntil) {
-    const wait = Math.round((refreshCooldownUntil - Date.now()) / 1000);
+async function readCredentials(
+  account: Account
+): Promise<{ creds: Credentials; source: CredentialSource }> {
+  if (process.platform === "darwin") {
+    try {
+      return { creds: await readKeychainCredentials(account), source: "keychain" };
+    } catch (e) {
+      // Never log stdout/stderr here — on a parse failure it may hold the secret.
+      const code = (e as { code?: unknown }).code;
+      streamDeck.logger.warn(
+        `usage[${account.id}]: keychain read failed (code ${String(code)}), trying file`
+      );
+    }
+  }
+  const raw = await readFile(credentialsFile(account), "utf8");
+  return { creds: JSON.parse(raw) as Credentials, source: "file" };
+}
+
+async function findClaudeBinary(): Promise<string | undefined> {
+  for (const bin of CLAUDE_BINARIES) {
+    try {
+      await access(bin, constants.X_OK);
+      return bin;
+    } catch {
+      // not installed here
+    }
+  }
+  return undefined;
+}
+
+// Keychain tokens can't be refreshed here (see CredentialSource), but Claude
+// Code can: `claude auth status` renews an expired token through Claude
+// Code's own refresh-and-store path, so it keeps a live refresh token and
+// stays signed in. Returns fresh Keychain credentials, or undefined if the
+// renewal was throttled, Claude Code wasn't found, or it failed.
+async function renewViaClaudeCode(account: Account): Promise<Credentials | undefined> {
+  const state = stateFor(account);
+  if (Date.now() - state.renewAttemptAt < RENEW_COOLDOWN_MS) return undefined;
+  state.renewAttemptAt = Date.now();
+  const bin = await findClaudeBinary();
+  if (!bin) {
+    streamDeck.logger.warn(`usage[${account.id}]: token expired and Claude Code not found to renew it`);
+    return undefined;
+  }
+  // The default login must run without CLAUDE_CONFIG_DIR: setting it, even to
+  // ~/.claude, makes Claude Code use a different Keychain item.
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (account === DEFAULT_ACCOUNT) delete env.CLAUDE_CONFIG_DIR;
+  else env.CLAUDE_CONFIG_DIR = account.configDir;
+  try {
+    // Output is account metadata only (email, org, plan) and is discarded.
+    await execFileAsync(bin, ["auth", "status"], { env, timeout: RENEW_TIMEOUT_MS });
+    const creds = await readKeychainCredentials(account);
+    streamDeck.logger.info(`usage[${account.id}]: renewed expired token via Claude Code`);
+    return creds;
+  } catch (e) {
+    const code = (e as { code?: unknown }).code;
+    streamDeck.logger.warn(`usage[${account.id}]: Claude Code renewal failed (code ${String(code)})`);
+    return undefined;
+  }
+}
+
+async function writeCredentials(account: Account, creds: Credentials): Promise<void> {
+  await writeFile(credentialsFile(account), JSON.stringify(creds, null, 2), "utf8");
+}
+
+async function refreshAccessToken(account: Account, creds: Credentials): Promise<Credentials> {
+  const state = stateFor(account);
+  if (Date.now() < state.refreshCooldownUntil) {
+    const wait = Math.round((state.refreshCooldownUntil - Date.now()) / 1000);
     throw new Error(`refresh on cooldown for ${wait}s — re-launch Claude Code to repair credentials`);
   }
   let res: Response;
@@ -129,7 +250,7 @@ async function refreshAccessToken(creds: Credentials): Promise<Credentials> {
   }
   if (res.status >= 400 && res.status < 500) {
     // Genuine auth/format problem — cooldown is appropriate.
-    refreshCooldownUntil = Date.now() + REFRESH_FAILURE_COOLDOWN_MS;
+    state.refreshCooldownUntil = Date.now() + REFRESH_FAILURE_COOLDOWN_MS;
     throw new Error(`refresh failed: HTTP ${res.status} ${await res.text()}`);
   }
   if (!res.ok) {
@@ -149,9 +270,9 @@ async function refreshAccessToken(creds: Credentials): Promise<Credentials> {
       expiresAt: Date.now() + body.expires_in * 1000,
     },
   };
-  await writeCredentials(updated);
-  refreshCooldownUntil = 0;
-  streamDeck.logger.info("usage: refreshed OAuth access token");
+  await writeCredentials(account, updated);
+  state.refreshCooldownUntil = 0;
+  streamDeck.logger.info(`usage[${account.id}]: refreshed OAuth access token`);
   return updated;
 }
 
@@ -172,27 +293,42 @@ async function fetchOnce(token: string): Promise<{ status: number; body: unknown
   return { status: res.status, body };
 }
 
-async function loadUsage(): Promise<Result<UsageResponse>> {
+async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
   let creds: Credentials;
+  let source: CredentialSource;
   try {
-    creds = await readCredentials();
+    ({ creds, source } = await readCredentials(account));
   } catch (e) {
     return { ok: false, reason: `cannot read credentials: ${(e as Error).message}` };
   }
 
+  const canRefresh = source === "file";
   const expired = creds.claudeAiOauth.expiresAt - Date.now() < 60_000;
-  if (expired) {
+  if (expired && !canRefresh) {
+    creds = (await renewViaClaudeCode(account)) ?? creds;
+  }
+  if (expired && canRefresh) {
     try {
-      creds = await refreshAccessToken(creds);
+      creds = await refreshAccessToken(account, creds);
     } catch (e) {
       return { ok: false, reason: `refresh: ${(e as Error).message}` };
     }
   }
 
   let res = await fetchOnce(creds.claudeAiOauth.accessToken);
+  if (res.status === 401 && !canRefresh) {
+    const renewed = await renewViaClaudeCode(account);
+    if (renewed) {
+      creds = renewed;
+      res = await fetchOnce(creds.claudeAiOauth.accessToken);
+    }
+    if (res.status === 401) {
+      return { ok: false, reason: "token expired — run Claude Code once to refresh it" };
+    }
+  }
   if (res.status === 401) {
     try {
-      creds = await refreshAccessToken(creds);
+      creds = await refreshAccessToken(account, creds);
       res = await fetchOnce(creds.claudeAiOauth.accessToken);
     } catch (e) {
       return { ok: false, reason: `401 then refresh: ${(e as Error).message}` };
@@ -207,43 +343,72 @@ async function loadUsage(): Promise<Result<UsageResponse>> {
   return { ok: true, data: res.body as UsageResponse };
 }
 
-export function invalidateUsageCache(): void {
-  cached = undefined;
-  refreshCooldownUntil = 0;
+// Last good numbers for an account and when they arrived, if any.
+export function lastGoodUsage(account: Account): { data: UsageResponse; at: number } | undefined {
+  const state = stateFor(account);
+  return state.lastGood ? { data: state.lastGood, at: state.lastSuccessAt } : undefined;
 }
 
-export async function getUsage(): Promise<Result<UsageResponse>> {
+export function invalidateUsageCache(account: Account): void {
+  const state = stateFor(account);
+  state.cached = undefined;
+  state.refreshCooldownUntil = 0;
+  // A tap is a deliberate retry, so let it renew straight away.
+  state.renewAttemptAt = 0;
+}
+
+export async function getUsage(account: Account): Promise<Result<UsageResponse>> {
+  const state = stateFor(account);
   const now = Date.now();
   // If the last good fetch was a long time ago we probably just woke from
   // sleep. Drop any active cooldown so the next call retries immediately.
-  if (lastSuccessAt > 0 && now - lastSuccessAt > SLEEP_GAP_MS && refreshCooldownUntil > now) {
-    streamDeck.logger.info("usage: long gap since last success, clearing refresh cooldown");
-    refreshCooldownUntil = 0;
+  if (
+    state.lastSuccessAt > 0 &&
+    now - state.lastSuccessAt > SLEEP_GAP_MS &&
+    state.refreshCooldownUntil > now
+  ) {
+    streamDeck.logger.info(`usage[${account.id}]: long gap since last success, clearing refresh cooldown`);
+    state.refreshCooldownUntil = 0;
   }
-  if (cached && now - cached.fetchedAt < CACHE_TTL_MS) return cached.value;
-  if (inflight) return inflight;
+  if (state.cached && now - state.cached.fetchedAt < CACHE_TTL_MS) return state.cached.value;
+  if (state.inflight) return state.inflight;
 
-  inflight = loadUsage().then((value) => {
-    if (value.ok) lastSuccessAt = Date.now();
+  // A network error (e.g. right after wake) rejects fetch; report it as a
+  // normal failure so callers always get a Result.
+  const load = loadUsage(account).catch(
+    (e: Error): Result<UsageResponse> => ({ ok: false, reason: `network error: ${e.message}` })
+  );
+  state.inflight = load.then((value) => {
+    if (value.ok) {
+      state.lastSuccessAt = Date.now();
+      state.lastGood = value.data;
+    }
     // Only overwrite cache on success, or if there's no prior good value
-    if (value.ok || !cached?.value.ok) {
-      cached = { value, fetchedAt: Date.now() };
+    if (value.ok || !state.cached?.value.ok) {
+      state.cached = { value, fetchedAt: Date.now() };
     } else {
       // Keep serving the stale-but-good value if the latest call failed
-      cached = { value: cached.value, fetchedAt: Date.now() - CACHE_TTL_MS + 60_000 };
+      state.cached = { value: state.cached.value, fetchedAt: Date.now() - CACHE_TTL_MS + 60_000 };
     }
     return value;
   });
 
   try {
-    return await inflight;
+    return await state.inflight;
   } finally {
-    inflight = undefined;
+    state.inflight = undefined;
   }
 }
 
 export async function verifyUsage(): Promise<void> {
-  const r = await getUsage();
-  if (r.ok) streamDeck.logger.info(`usage probe ok (five_hour=${r.data.five_hour?.utilization})`);
-  else streamDeck.logger.error(`usage probe failed: ${r.reason}`);
+  await Promise.all(
+    ACCOUNTS.map(async (account) => {
+      const r = await getUsage(account);
+      if (r.ok) {
+        streamDeck.logger.info(`usage[${account.id}] probe ok (five_hour=${r.data.five_hour?.utilization})`);
+      } else {
+        streamDeck.logger.error(`usage[${account.id}] probe failed: ${r.reason}`);
+      }
+    })
+  );
 }
