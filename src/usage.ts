@@ -11,6 +11,7 @@ import {
   keychainService,
   type Account,
 } from "./accounts.js";
+import { needsAction } from "./tile-state.js";
 
 // On macOS Claude Code keeps its OAuth credentials in the login Keychain
 // instead of the JSON file. The first read may trigger a macOS "allow access"
@@ -21,6 +22,11 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const REFRESH_URL = "https://console.anthropic.com/v1/oauth/token";
 const BETA_HEADER = "oauth-2025-04-20";
 const CACHE_TTL_MS = 3 * 60_000;
+// A failure is cached briefly so keys ticking together share one attempt.
+const FAILURE_TTL_MS = 60_000;
+// While an account needs signing in, re-read its Keychain item this often
+// (local only, no network) so a fresh sign-in shows up without a tap.
+const SIGN_IN_POLL_MS = 20_000;
 // Public OAuth client id used by Claude Code. Required field for refresh
 // requests against console.anthropic.com.
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
@@ -128,6 +134,11 @@ type AccountState = {
   refreshCooldownUntil: number;
   lastSuccessAt: number;
   renewAttemptAt: number;
+  // While the account needs signing in: the token that failed (undefined if
+  // there were no credentials at all) and the timer watching for a new one.
+  signInWatch?: { failedToken?: string; timer: NodeJS.Timeout };
+  // Access token the latest load used, for signInWatch.
+  lastToken?: string;
   // Newest good response, kept so a tile can show it (marked old) through
   // a temporary failure instead of flipping to "!".
   lastGood?: UsageResponse;
@@ -212,6 +223,12 @@ async function renewViaClaudeCode(account: Account): Promise<Credentials | undef
     // Output is account metadata only (email, org, plan) and is discarded.
     await execFileAsync(bin, ["auth", "status"], { env, timeout: RENEW_TIMEOUT_MS });
     const creds = await readKeychainCredentials(account);
+    // Claude Code exits 0 even when its refresh token is dead and it could
+    // not renew, so check the result instead of trusting the exit code.
+    if (isExpired(creds)) {
+      streamDeck.logger.warn(`usage[${account.id}]: Claude Code ran but the token is still expired — sign in again`);
+      return undefined;
+    }
     streamDeck.logger.info(`usage[${account.id}]: renewed expired token via Claude Code`);
     return creds;
   } catch (e) {
@@ -219,6 +236,10 @@ async function renewViaClaudeCode(account: Account): Promise<Credentials | undef
     streamDeck.logger.warn(`usage[${account.id}]: Claude Code renewal failed (code ${String(code)})`);
     return undefined;
   }
+}
+
+function isExpired(creds: Credentials): boolean {
+  return creds.claudeAiOauth.expiresAt - Date.now() < 60_000;
 }
 
 async function writeCredentials(account: Account, creds: Credentials): Promise<void> {
@@ -303,9 +324,14 @@ async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
   }
 
   const canRefresh = source === "file";
-  const expired = creds.claudeAiOauth.expiresAt - Date.now() < 60_000;
+  const expired = isExpired(creds);
+  stateFor(account).lastToken = creds.claudeAiOauth.accessToken;
   if (expired && !canRefresh) {
-    creds = (await renewViaClaudeCode(account)) ?? creds;
+    const renewed = await renewViaClaudeCode(account);
+    // Still expired: the API would only answer 401, so don't ask it.
+    if (!renewed) return { ok: false, reason: "token expired — run Claude Code once to refresh it" };
+    creds = renewed;
+    stateFor(account).lastToken = creds.claudeAiOauth.accessToken;
   }
   if (expired && canRefresh) {
     try {
@@ -320,6 +346,7 @@ async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
     const renewed = await renewViaClaudeCode(account);
     if (renewed) {
       creds = renewed;
+      stateFor(account).lastToken = creds.claudeAiOauth.accessToken;
       res = await fetchOnce(creds.claudeAiOauth.accessToken);
     }
     if (res.status === 401) {
@@ -347,6 +374,63 @@ async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
 export function lastGoodUsage(account: Account): { data: UsageResponse; at: number } | undefined {
   const state = stateFor(account);
   return state.lastGood ? { data: state.lastGood, at: state.lastSuccessAt } : undefined;
+}
+
+// Every finished fetch is announced so all keys showing that account redraw
+// together, not just the key whose tick or tap asked for it.
+type UsageListener = (account: Account, result: Result<UsageResponse>) => void;
+const listeners = new Set<UsageListener>();
+
+export function onUsageResult(listener: UsageListener): void {
+  listeners.add(listener);
+}
+
+function announce(account: Account, result: Result<UsageResponse>): void {
+  for (const listener of listeners) {
+    try {
+      listener(account, result);
+    } catch (e) {
+      streamDeck.logger.error(`usage[${account.id}]: listener failed: ${(e as Error).message}`);
+    }
+  }
+}
+
+// While an account needs signing in, watch its credentials so signing in
+// again updates every key within SIGN_IN_POLL_MS instead of waiting for the
+// next tick (or a tap on each key).
+function watchSignIn(account: Account, failed: boolean): void {
+  const state = stateFor(account);
+  if (!failed) {
+    if (state.signInWatch) clearInterval(state.signInWatch.timer);
+    state.signInWatch = undefined;
+    return;
+  }
+  const failedToken = state.lastToken;
+  if (state.signInWatch) {
+    state.signInWatch.failedToken = failedToken;
+    return;
+  }
+  const timer = setInterval(() => void checkSignIn(account), SIGN_IN_POLL_MS);
+  timer.unref();
+  state.signInWatch = { failedToken, timer };
+}
+
+// One watcher pass: if the account's token changed since it failed, fetch
+// straight away. Exported for scripts-check-usage.mjs.
+export async function checkSignIn(account: Account): Promise<void> {
+  const state = stateFor(account);
+  const watch = state.signInWatch;
+  if (!watch || state.inflight) return;
+  let token: string;
+  try {
+    token = (await readCredentials(account)).creds.claudeAiOauth.accessToken;
+  } catch {
+    return; // still no credentials
+  }
+  if (token === watch.failedToken) return;
+  streamDeck.logger.info(`usage[${account.id}]: new sign-in found, refreshing`);
+  invalidateUsageCache(account);
+  await getUsage(account);
 }
 
 export function invalidateUsageCache(account: Account): void {
@@ -382,14 +466,15 @@ export async function getUsage(account: Account): Promise<Result<UsageResponse>>
     if (value.ok) {
       state.lastSuccessAt = Date.now();
       state.lastGood = value.data;
-    }
-    // Only overwrite cache on success, or if there's no prior good value
-    if (value.ok || !state.cached?.value.ok) {
       state.cached = { value, fetchedAt: Date.now() };
     } else {
-      // Keep serving the stale-but-good value if the latest call failed
-      state.cached = { value: state.cached.value, fetchedAt: Date.now() - CACHE_TTL_MS + 60_000 };
+      // Cache the failure itself, briefly. Old numbers are never re-served
+      // as a fresh success: tiles get them from lastGoodUsage, marked old,
+      // and only when the failure is temporary.
+      state.cached = { value, fetchedAt: Date.now() - CACHE_TTL_MS + FAILURE_TTL_MS };
     }
+    watchSignIn(account, !value.ok && needsAction(value.reason));
+    announce(account, value);
     return value;
   });
 

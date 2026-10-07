@@ -33,8 +33,7 @@ export type TileState<T> =
   | { kind: "data"; data: T; stale?: string };
 
 // `good` is the last good response and when it arrived. Its age always
-// comes from that real success: an ok result can be a cached one served
-// while the latest fetch failed.
+// comes from that real success.
 export function tileState<T>(
   r: { ok: true; data: T } | { ok: false; reason: string },
   good: { data: T; at: number } | undefined,
