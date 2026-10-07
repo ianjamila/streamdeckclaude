@@ -1,6 +1,6 @@
 {
   "Name": "Claude Usage",
-  "Version": "1.8.0.0",
+  "Version": "1.8.1.0",
   "Author": "Aaron Holt",
   "Description": "Live Claude usage for one or two Claude Code accounts (session, weekly all-models, weekly scoped-model, extra credits — pick the account per key) plus Codex CLI usage, a Peak Hours key, and CPU load / CPU temperature keys.",
   "Icon": "imgs/plugin/marketplace",

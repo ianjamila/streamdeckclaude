@@ -7,7 +7,14 @@ import {
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
 import { accountById, type Account } from "../accounts.js";
-import { getUsage, invalidateUsageCache, lastGoodUsage, type UsageResponse } from "../usage.js";
+import {
+  getUsage,
+  invalidateUsageCache,
+  lastGoodUsage,
+  onUsageResult,
+  type Result,
+  type UsageResponse,
+} from "../usage.js";
 import { tileState } from "../tile-state.js";
 import { renderError, renderLoading } from "../render.js";
 import { openSettings, type OpenSettings } from "../open-settings.js";
@@ -25,6 +32,19 @@ type KeyState = { timer: NodeJS.Timeout; account: Account };
 // timer, tap-to-refresh. Subclasses only decide what to draw from the data.
 export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
   private readonly keys = new Map<string, KeyState>();
+  // Live key handles, so a fetch made for one key (or by the sign-in
+  // watcher) redraws every key of this type showing that account.
+  private readonly handles = new Map<string, KeyAction<UsageKeySettings>>();
+
+  constructor() {
+    super();
+    onUsageResult((account, r) => {
+      for (const [id, key] of this.keys) {
+        const action = this.handles.get(id);
+        if (action && key.account === account) void this.draw(action, account, r);
+      }
+    });
+  }
 
   // Label shown while loading or on error.
   protected abstract readonly label: string;
@@ -39,6 +59,7 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
     // mid-fetch is still cleaned up by onWillDisappear.
     const timer = setInterval(() => void this.tick(action), REFRESH_MS);
     this.keys.set(action.id, { timer, account });
+    this.handles.set(action.id, action);
     await action.setImage(renderLoading(this.label, account.badge));
     await this.tick(action);
   }
@@ -47,6 +68,7 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
     const key = this.keys.get(ev.action.id);
     if (key) clearInterval(key.timer);
     this.keys.delete(ev.action.id);
+    this.handles.delete(ev.action.id);
   }
 
   override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<UsageKeySettings>): Promise<void> {
@@ -74,6 +96,10 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
     if (!key) return;
     const { account } = key;
     const r = await getUsage(account);
+    await this.draw(action, account, r);
+  }
+
+  private async draw(action: KeyAction<UsageKeySettings>, account: Account, r: Result<UsageResponse>): Promise<void> {
     // The account may have been switched while the fetch was in flight.
     if (this.keys.get(action.id)?.account !== account) return;
     // On a temporary failure keep the last good numbers (marked old after
