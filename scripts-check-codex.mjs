@@ -63,5 +63,37 @@ expect("47h: still 1D OLD", m.staleTag(now0 - 47 * H, now0), "1D OLD");
 expect("3 days: 3D OLD", m.staleTag(now0 - 72 * H, now0), "3D OLD");
 expect("a week+: 7D+ OLD", m.staleTag(now0 - 200 * H, now0), "7D+ OLD");
 expect("no timestamp: no tag", m.staleTag(0, now0), undefined);
+// Codex is used but its replies stop reporting usage: 2+ turns started more
+// than 10 min ago, after the newest snapshot, with no usage since.
+const M = 60_000, snapAt = now0 - 3 * H;
+expect("no turns: fine", m.stalledTurns(snapAt, [], now0), false);
+expect("one silent turn (e.g. quit mid-reply): fine", m.stalledTurns(snapAt, [now0 - 30 * M], now0), false);
+expect("two silent turns: stalled", m.stalledTurns(snapAt, [now0 - 30 * M, now0 - 20 * M], now0), true);
+expect("second turn under 10 min old: not yet", m.stalledTurns(snapAt, [now0 - 30 * M, now0 - 9 * M], now0), false);
+expect("turns before the snapshot don't count", m.stalledTurns(snapAt, [now0 - 4 * H, now0 - 5 * H, now0 - 30 * M], now0), false);
+expect("never any snapshot: turns count", m.stalledTurns(0, [now0 - 30 * M, now0 - 20 * M], now0), true);
+
+// End to end on files: a newer session with two turns that never reported.
+const turn = (ms) => JSON.stringify({ timestamp: new Date(ms).toISOString(), type: "event_msg", payload: { type: "task_started" } });
+const today = join(home, "sessions", "2026", "10", "06"); mkdirSync(today, { recursive: true });
+const realNow = Date.now();
+writeFileSync(join(today, "rollout-d.jsonl"), [turn(realNow - 40 * M), turn(realNow - 25 * M)].join("\n") + "\n");
+let st2 = await m.readCodexStatus();
+expect("files: stalled → CHECK CODEX", [st2.ok, st2.hint, st2.attention], [false, "CHECK CODEX", true]);
+// Codex replies again: a fresh snapshot clears it.
+writeFileSync(join(today, "rollout-d.jsonl"), [turn(realNow - 40 * M), turn(realNow - 25 * M), turn(realNow - 2 * M), ev(new Date(realNow - M).toISOString(), { used_percent: 12, window_minutes: 10080, resets_at: nowS + 86400 }, null)].join("\n") + "\n");
+st2 = await m.readCodexStatus();
+expect("files: replies again → ok", st2.ok, true);
+
+// The window a tap on a CHECK CODEX key opens.
+const { codexCheckScript } = await import("./src/codex-check.ts");
+const { execFileSync } = await import("node:child_process");
+const script = codexCheckScript("/x/it's codex");
+expect("check: runs login status", script.includes("'/x/it'\\''s codex' login status"), true);
+expect("check: offers codex login", script.includes("then echo; '/x/it'\\''s codex' login; fi"), true);
+const scriptFile = join(home, "check.command");
+writeFileSync(scriptFile, script);
+expect("check: zsh -n", (() => { try { execFileSync("/bin/zsh", ["-n", scriptFile]); return true; } catch { return false; } })(), true);
+
 console.log(fail ? `${fail} FAILED` : "all codex checks passed");
 process.exit(fail ? 1 : 0);
