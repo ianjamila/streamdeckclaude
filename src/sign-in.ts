@@ -1,36 +1,38 @@
-import { execFile } from "node:child_process";
-import { chmod, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
 import streamDeck from "@elgato/streamdeck";
 import { DEFAULT_ACCOUNT, type Account } from "./accounts.js";
+import { notify } from "./notify.js";
 import { chromeProfileArgs, type OpenSettings } from "./open-settings.js";
-import { findClaudeBinary, onUsageResult, reannounce } from "./usage.js";
+import { openCommandFile, openCommandLine, shellQuote, writeScript } from "./terminal.js";
+import { findClaudeBinary, onUsageResult, reannounce, signInNeeded } from "./usage.js";
 
-// Tapping a key whose account needs signing in opens Terminal on
-// `claude auth login` for that account. Keys read "SIGNING IN" meanwhile;
-// the sign-in watcher in usage.ts spots the new token and redraws them.
+// Tapping a key whose account needs signing in (or clicking the banner that
+// says so) opens Terminal on `claude auth login` for that account. Keys read
+// "SIGNING IN" meanwhile; the sign-in watcher in usage.ts spots the new token
+// and redraws them.
 
-const execFileAsync = promisify(execFile);
 // A double tap shouldn't start two sign-ins.
 const REOPEN_AFTER_MS = 15_000;
 // How long keys read "SIGNING IN" if the new login never lands.
 const SIGNING_IN_MS = 5 * 60_000;
 const openedAt = new Map<string, number>();
+// Accounts already told (by banner) that they need signing in, until their
+// next good result, so a dead login gets one banner, not one per tick.
+const bannered = new Set<string>();
 
-// A good result means the sign-in (if any) is over.
 onUsageResult((account, r) => {
-  if (r.ok) openedAt.delete(account.id);
+  if (r.ok) {
+    // A good result means the sign-in (if any) is over.
+    openedAt.delete(account.id);
+    bannered.delete(account.id);
+  } else if (signInNeeded(account) && !bannered.has(account.id)) {
+    bannered.add(account.id);
+    void bannerSignIn(account);
+  }
 });
 
 export function signingIn(account: Account): boolean {
   const at = openedAt.get(account.id);
   return at !== undefined && Date.now() - at < SIGNING_IN_MS;
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
 // `browser`: helper Claude Code runs (via BROWSER) to open the sign-in page;
@@ -69,34 +71,35 @@ function browserScript(account: Account, openArgs: string[]): string {
   ].join("\n");
 }
 
-async function writeScript(file: string, text: string): Promise<void> {
-  await writeFile(file, text, "utf8");
-  await chmod(file, 0o700);
+// Writes the sign-in script (and its browser helper) and returns its path,
+// or undefined if Claude Code isn't installed where we look.
+// `settings` is the key's "Tap opens in" / "Chrome profile" choice.
+async function prepareSignIn(account: Account, settings: OpenSettings): Promise<string | undefined> {
+  const bin = await findClaudeBinary();
+  if (!bin) {
+    streamDeck.logger.warn(`sign-in[${account.id}]: Claude Code not found`);
+    return undefined;
+  }
+  let browser: string | undefined;
+  if (process.platform === "darwin" && settings.openIn !== "default") {
+    const profile = settings.chromeProfile?.trim() || account.email;
+    browser = await writeScript(
+      `claude-usage-browser-${account.id}`,
+      browserScript(account, await chromeProfileArgs(profile))
+    );
+  }
+  return writeScript(`claude-usage-sign-in-${account.id}.command`, signInScript(account, bin, browser));
 }
 
 // Opens the sign-in window. Returns false if it couldn't (Claude Code not
 // found, or opening failed) so the caller can fall back to the usage page.
-// `settings` is the key's "Tap opens in" / "Chrome profile" choice.
 export async function openSignIn(account: Account, settings: OpenSettings = {}): Promise<boolean> {
   const last = openedAt.get(account.id) ?? -Infinity;
   if (Date.now() - last < REOPEN_AFTER_MS) return true;
-  const bin = await findClaudeBinary();
-  if (!bin) {
-    streamDeck.logger.warn(`sign-in[${account.id}]: Claude Code not found`);
-    return false;
-  }
-  // A .command file opens in the user's terminal app via Launch Services,
-  // with no Automation permission prompt (unlike scripting Terminal).
-  const file = join(tmpdir(), `claude-usage-sign-in-${account.id}.command`);
   try {
-    let browser: string | undefined;
-    if (process.platform === "darwin" && settings.openIn !== "default") {
-      browser = join(tmpdir(), `claude-usage-browser-${account.id}`);
-      const profile = settings.chromeProfile?.trim() || account.email;
-      await writeScript(browser, browserScript(account, await chromeProfileArgs(profile)));
-    }
-    await writeScript(file, signInScript(account, bin, browser));
-    await execFileAsync("/usr/bin/open", [file]);
+    const file = await prepareSignIn(account, settings);
+    if (!file) return false;
+    await openCommandFile(file);
   } catch (e) {
     streamDeck.logger.warn(`sign-in[${account.id}]: could not open Terminal: ${(e as Error).message}`);
     return false;
@@ -105,4 +108,22 @@ export async function openSignIn(account: Account, settings: OpenSettings = {}):
   streamDeck.logger.info(`sign-in[${account.id}]: opened Terminal to sign in`);
   reannounce(account); // every key of the account now reads "SIGNING IN"
   return true;
+}
+
+// The banner when an account first needs signing in; clicking it opens the
+// same sign-in window a tap would (with the account's own Chrome profile).
+async function bannerSignIn(account: Account): Promise<void> {
+  let file: string | undefined;
+  try {
+    file = await prepareSignIn(account, {});
+  } catch {
+    file = undefined; // still worth a banner without the click action
+  }
+  await notify({
+    title: `Claude ${account.badge} needs signing in`,
+    message: `${account.email}: tap its Stream Deck key to sign in.`,
+    group: `claude-usage-sign-in-${account.id}`,
+    onClick: file ? openCommandLine(file) : undefined,
+    clickHint: "Or click here.",
+  });
 }

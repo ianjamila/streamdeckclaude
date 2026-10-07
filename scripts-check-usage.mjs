@@ -10,6 +10,8 @@ const fake = {
   fetches: 0,
   logs: [],
   opened: [], // args of each /usr/bin/open call
+  banners: [], // [tool, args] of each notification
+  notifierFails: false,
 };
 globalThis.__fake = fake;
 Date.now = () => fake.now;
@@ -38,6 +40,12 @@ const fakeModules = {
         if (!creds) throw Object.assign(new Error("not found"), { code: 44 });
         return { stdout: JSON.stringify(creds) + "\\n", stderr: "" };
       }
+      if (cmd.endsWith("/terminal-notifier")) {
+        if (f.notifierFails) throw Object.assign(new Error("not allowed"), { code: 3 });
+        f.banners.push(["tn", args]);
+        return { stdout: "", stderr: "" };
+      }
+      if (cmd === "/usr/bin/osascript") { f.banners.push(["osa", args]); return { stdout: "", stderr: "" }; }
       if (cmd === "/usr/bin/open") { f.opened.push(args); return { stdout: "", stderr: "" }; }
       if (args[0] === "auth" && args[1] === "status") { f.onAuthStatus(); return { stdout: "", stderr: "" }; }
       throw new Error("unexpected exec " + cmd);
@@ -61,6 +69,11 @@ registerHooks({
 });
 
 Object.defineProperty(process, "platform", { value: "darwin" });
+// Notification on/off switch shared with Claude Code's notify hook (cnotify).
+const { mkdtempSync, writeFileSync: writeFile0 } = await import("node:fs");
+const modeFile = (await import("node:path")).join(mkdtempSync((await import("node:os")).tmpdir() + "/notify-check-"), "notify-mode");
+process.env.CLAUDE_NOTIFY_MODE_FILE = modeFile;
+const settle = () => new Promise((r) => setTimeout(r, 30));
 const usage = await import("./src/usage.ts");
 const { ACCOUNTS } = await import("./src/accounts.ts");
 const signInMod = await import("./src/sign-in.ts").catch((e) => ({ loadError: e }));
@@ -104,6 +117,18 @@ expect("dead login: says renewal failed", fake.logs.some((l) => l.startsWith("wa
 expect("dead login: no doomed fetch with an expired token", fake.fetches, 0);
 expect("dead login: broadcast failure", heard.splice(0), [["me", false]]);
 expect("dead login: sign-in needed", usage.signInNeeded?.(me), true);
+await settle();
+expect("dead login: one banner", fake.banners.length, 1);
+const [tool, bannerArgs = []] = fake.banners[0] ?? [];
+expect("banner via terminal-notifier", tool, "tn");
+expect("banner names the account", bannerArgs[bannerArgs.indexOf("-title") + 1], "Claude ME needs signing in");
+expect("banner click opens the sign-in", /^\/usr\/bin\/open '.*claude-usage-sign-in-me\.command'$/.test(bannerArgs[bannerArgs.indexOf("-execute") + 1] ?? ""), true);
+fake.now += 61_000;
+await usage.getUsage(me);
+await settle();
+expect("still dead: no second banner", fake.banners.length, 1);
+fake.banners.length = 0;
+heard.length = 0;
 expect("other account unaffected", usage.signInNeeded?.(ew), false);
 
 // 2b. Tapping the key now opens Terminal on a sign-in script for that
@@ -189,6 +214,33 @@ if (typeof usage.checkSignIn === "function") {
   expect("after sign-in: last good is now", good?.at, fake.now);
   expect("after sign-in: no sign-in needed", usage.signInNeeded?.(me), false);
   expect("after sign-in: no longer signing in", signInMod.signingIn?.(me), false);
+
+  // Login dies again: a new banner, unless notifications are quiet/off.
+  writeFile0(modeFile, "quiet\n");
+  fake.now += 9 * H;
+  fake.validTokens.delete("t2");
+  fake.banners.length = 0;
+  usage.invalidateUsageCache(me);
+  await usage.getUsage(me);
+  await settle();
+  expect("cnotify quiet: no banner", fake.banners.length, 0);
+  // Back on, next episode, terminal-notifier not allowed: plain banner.
+  writeFile0(modeFile, "on\n");
+  signIn("t2b");
+  usage.invalidateUsageCache(me);
+  await usage.getUsage(me);
+  fake.now += 9 * H;
+  fake.validTokens.delete("t2b");
+  fake.notifierFails = true;
+  usage.invalidateUsageCache(me);
+  await usage.getUsage(me);
+  await settle();
+  expect("notifier fails: osascript banner", fake.banners.map((b) => b[0]), ["osa"]);
+  fake.notifierFails = false;
+  fake.banners.length = 0;
+  signIn("t2c");
+  usage.invalidateUsageCache(me);
+  await usage.getUsage(me);
 } else {
   fail++;
   console.log("FAIL checkSignIn is not exported");

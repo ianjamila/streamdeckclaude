@@ -122,8 +122,29 @@ function findRateLimits(x: unknown): CodexRateLimits | undefined {
   return undefined;
 }
 
-async function latestInFile(file: string): Promise<CodexSnapshot | undefined> {
+// When each turn in the file started (Codex writes "task_started" as it
+// begins replying to a message).
+function turnStartsIn(lines: string[]): number[] {
+  const starts: number[] = [];
+  for (const line of lines) {
+    if (!line.includes('"task_started"')) continue;
+    try {
+      const o = JSON.parse(line) as { timestamp?: string; payload?: { type?: string } };
+      const at = o.timestamp ? Date.parse(o.timestamp) : NaN;
+      if (o.payload?.type === "task_started" && Number.isFinite(at)) starts.push(at);
+    } catch {
+      continue;
+    }
+  }
+  return starts;
+}
+
+async function scanFile(file: string): Promise<{ snap?: CodexSnapshot; turnStarts: number[] }> {
   const lines = (await readTail(file)).split("\n");
+  return { snap: latestIn(lines), turnStarts: turnStartsIn(lines) };
+}
+
+function latestIn(lines: string[]): CodexSnapshot | undefined {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line.includes('"rate_limits"')) continue;
@@ -144,13 +165,34 @@ export async function readCodexSnapshot(): Promise<CodexSnapshot | undefined> {
   return newestSnapshot(await recentSessionFiles());
 }
 
-async function newestSnapshot(files: string[]): Promise<CodexSnapshot | undefined> {
+async function scanFiles(files: string[]): Promise<{ snap?: CodexSnapshot; turnStarts: number[] }> {
   let best: CodexSnapshot | undefined;
+  const turnStarts: number[] = [];
   for (const file of files) {
-    const snap = await latestInFile(file).catch(() => undefined);
-    if (snap && (!best || snap.at > best.at)) best = snap;
+    const scan = await scanFile(file).catch(() => undefined);
+    if (!scan) continue;
+    turnStarts.push(...scan.turnStarts);
+    if (scan.snap && (!best || scan.snap.at > best.at)) best = scan.snap;
   }
-  return best;
+  return { snap: best, turnStarts };
+}
+
+async function newestSnapshot(files: string[]): Promise<CodexSnapshot | undefined> {
+  return (await scanFiles(files)).snap;
+}
+
+// Every Codex reply logs a usage snapshot within seconds (median 13s, worst
+// 106s over 94 turns measured 2026-10-07). So turns that started well before
+// now, after the newest snapshot, and never logged one mean Codex is being
+// used but its replies aren't coming back: signed out, offline, or a log
+// format change. Two such turns, not one: quitting Codex mid-reply leaves a
+// single silent turn behind (seen twice in the same sample).
+export const STALL_AFTER_MS = 10 * 60_000;
+export const STALL_TURNS = 2;
+
+export function stalledTurns(snapAt: number, turnStarts: number[], now = Date.now()): boolean {
+  const silent = turnStarts.filter((t) => t > snapAt && now - t > STALL_AFTER_MS);
+  return silent.length >= STALL_TURNS;
 }
 
 // Like readCodexSnapshot, but says why there is no snapshot, as the short
@@ -168,11 +210,16 @@ export function staleTag(snapAt: number, now = Date.now()): string | undefined {
   return age < STALE_AFTER_MS ? undefined : ageTag(age);
 }
 
-export type CodexStatus = { ok: true; snap: CodexSnapshot } | { ok: false; hint: string };
+// `attention`: the user should look (Codex replies stopped reporting usage),
+// as opposed to there simply being nothing to show yet.
+export type CodexStatus =
+  | { ok: true; snap: CodexSnapshot }
+  | { ok: false; hint: string; attention?: boolean };
 
 export async function readCodexStatus(): Promise<CodexStatus> {
   const files = await recentSessionFiles();
   if (files.length === 0) return { ok: false, hint: "NO SESSIONS" };
-  const snap = await newestSnapshot(files);
+  const { snap, turnStarts } = await scanFiles(files);
+  if (stalledTurns(snap?.at ?? 0, turnStarts)) return { ok: false, hint: "CHECK CODEX", attention: true };
   return snap ? { ok: true, snap } : { ok: false, hint: "NO DATA" };
 }

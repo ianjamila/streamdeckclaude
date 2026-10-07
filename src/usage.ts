@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, constants, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +11,7 @@ import {
   keychainService,
   type Account,
 } from "./accounts.js";
+import { findBinary } from "./terminal.js";
 import { needsAction } from "./tile-state.js";
 
 // On macOS Claude Code keeps its OAuth credentials in the login Keychain
@@ -188,16 +189,8 @@ async function readCredentials(
   return { creds: JSON.parse(raw) as Credentials, source: "file" };
 }
 
-export async function findClaudeBinary(): Promise<string | undefined> {
-  for (const bin of CLAUDE_BINARIES) {
-    try {
-      await access(bin, constants.X_OK);
-      return bin;
-    } catch {
-      // not installed here
-    }
-  }
-  return undefined;
+export function findClaudeBinary(): Promise<string | undefined> {
+  return findBinary(CLAUDE_BINARIES);
 }
 
 // Keychain tokens can't be refreshed here (see CredentialSource), but Claude
