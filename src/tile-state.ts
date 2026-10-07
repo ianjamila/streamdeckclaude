@@ -33,13 +33,17 @@ export type TileState<T> =
   | { kind: "data"; data: T; stale?: string };
 
 // `good` is the last good response and when it arrived. Its age always
-// comes from that real success.
+// comes from that real success. `signingIn`: a tap just opened the sign-in
+// window, so a sign-in error reads "SIGNING IN" until the new login lands.
 export function tileState<T>(
   r: { ok: true; data: T } | { ok: false; reason: string },
   good: { data: T; at: number } | undefined,
-  now = Date.now()
+  now = Date.now(),
+  signingIn = false
 ): TileState<T> {
-  if (!r.ok && needsAction(r.reason)) return { kind: "error", hint: errorHint(r.reason) };
+  if (!r.ok && needsAction(r.reason)) {
+    return { kind: "error", hint: signingIn ? "SIGNING IN" : errorHint(r.reason) };
+  }
   const latest = good ?? (r.ok ? { data: r.data, at: now } : undefined);
   if (!latest) return { kind: "error", hint: r.ok ? undefined : errorHint(r.reason) };
   const age = now - latest.at;

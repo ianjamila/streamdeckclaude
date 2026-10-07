@@ -55,6 +55,10 @@ expect("offline, good 2h ago: data + 2H OLD", tileState(offline, { data: old, at
 expect("offline, never good: OFFLINE", tileState(offline, undefined, now), { kind: "error", hint: "OFFLINE" });
 expect("rate limited keeps data", tileState({ ok: false, reason: "rate_limited" }, { data: old, at: now - 30 * M }, now), { kind: "data", data: old, stale: "30M OLD" });
 expect("expired shows SIGN-IN despite good data", tileState(expired, { data: old, at: now - 1 * M }, now), { kind: "error", hint: "SIGN-IN" });
+expect("expired while signing in: SIGNING IN", tileState(expired, { data: old, at: now - 1 * M }, now, true), { kind: "error", hint: "SIGNING IN" });
+expect("no login while signing in: SIGNING IN", tileState({ ok: false, reason: "cannot read credentials: x" }, undefined, now, true), { kind: "error", hint: "SIGNING IN" });
+expect("offline while signing in keeps data", tileState(offline, { data: old, at: now - 2 * H }, now, true), { kind: "data", data: old, stale: "2H OLD" });
+expect("ok while signing in shows data", tileState(ok, { data, at: now }, now, true), { kind: "data", data });
 
 console.log(fail ? `${fail} FAILED` : "all stale checks passed");
 process.exit(fail ? 1 : 0);
