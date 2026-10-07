@@ -19,7 +19,7 @@ import {
 import { tileState } from "../tile-state.js";
 import { renderError, renderLoading } from "../render.js";
 import { openSettings, type OpenSettings } from "../open-settings.js";
-import { openSignIn } from "../sign-in.js";
+import { openSignIn, signingIn } from "../sign-in.js";
 
 // Every usage key refreshes on the same cadence; the shared per-account cache
 // in usage.ts keeps that to one HTTP call per account per CACHE_TTL_MS.
@@ -88,7 +88,7 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
     // Account needs signing in: open Terminal on the sign-in instead. No
     // fetch here — a renewal running alongside the sign-in could race it;
     // the sign-in watcher redraws every key once the new login lands.
-    if (signInNeeded(account) && (await openSignIn(account))) return;
+    if (signInNeeded(account) && (await openSignIn(account, ev.payload.settings))) return;
     // Otherwise a tap forces a fresh fetch — useful for recovery after
     // sleep — and opens the Settings page in that account's browser
     // profile, in parallel so the user isn't waiting on the network call.
@@ -111,7 +111,7 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
     // On a temporary failure keep the last good numbers (marked old after
     // 15 min); a failure the user must fix shows "!" with its reason so old
     // numbers don't hide it.
-    const tile = tileState(r, lastGoodUsage(account));
+    const tile = tileState(r, lastGoodUsage(account), Date.now(), signingIn(account));
     await action.setImage(
       tile.kind === "data"
         ? this.render(tile.data, account.badge, tile.stale)

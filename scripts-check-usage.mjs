@@ -112,9 +112,11 @@ if (signInMod.loadError) {
   fail++;
   console.log("FAIL src/sign-in.ts:", signInMod.loadError.message);
 } else {
-  const { openSignIn, signInScript } = signInMod;
+  const { openSignIn, signInScript, signingIn } = signInMod;
   const { execFileSync } = await import("child_process"); // real one: the fake is keyed "node:child_process"
   const { readFileSync, statSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
   expect("tap opens sign-in", await openSignIn(me), true);
   expect("one open call", fake.opened.length, 1);
   const file = fake.opened[0]?.[0] ?? "";
@@ -123,11 +125,38 @@ if (signInMod.loadError) {
   expect("script is executable", (statSync(file).mode & 0o100) !== 0, true);
   expect("ME: runs login with ME email", script.includes("auth login --claudeai --email 'jamilaian21@gmail.com'"), true);
   expect("ME: default config dir (unset)", script.includes("unset CLAUDE_CONFIG_DIR"), true);
+  // The sign-in page opens in the account's Chrome profile: BROWSER points
+  // at a helper that opens Chrome on that profile.
+  const browserLine = script.split("\n").find((l) => l.startsWith("export BROWSER=")) ?? "";
+  const helper = browserLine.replace(/^export BROWSER='(.*)'$/, "$1");
+  expect("ME: BROWSER set to a helper", helper.endsWith("claude-usage-browser-me"), true);
+  const helperText = (() => { try { return readFileSync(helper, "utf8"); } catch { return ""; } })();
+  expect("helper is executable", helperText ? (statSync(helper).mode & 0o100) !== 0 : false, true);
+  expect("helper opens Chrome on ME's profile", /'--profile-(directory=Profile \d+|email=jamilaian21@gmail\.com)'/.test(helperText), true);
+  expect("helper falls back to the default browser", helperText.includes('|| /usr/bin/open "$1"'), true);
+  expect("helper passes zsh -n", (() => { try { execFileSync("/bin/zsh", ["-n", helper]); return true; } catch { return false; } })(), true);
+  expect("ME: signing in after tap", signingIn(me), true);
+  expect("EW: not signing in", signingIn(ew), false);
+  expect("tap re-announces the account so every key redraws", heard.splice(0), [["me", false]]);
   expect("script passes zsh -n", (() => { try { execFileSync("/bin/zsh", ["-n", file]); return true; } catch { return false; } })(), true);
   expect("double tap: no second window", [await openSignIn(me), fake.opened.length], [true, 1]);
   fake.now += 16_000;
   expect("tap after 16s opens again", [await openSignIn(me), fake.opened.length], [true, 2]);
-  const ewScript = signInScript(ew, "/x/it's claude");
+  const ewScript = signInScript(ew, "/x/it's claude", "/t/browser-ew");
+  expect("EW: BROWSER helper", ewScript.includes("export BROWSER='/t/browser-ew'"), true);
+  expect("no helper: no BROWSER line", signInScript(ew, "/x/claude").includes("BROWSER"), false);
+  // "Default browser" on the key, or a custom profile in its box.
+  fake.now += 16_000;
+  fake.opened.length = 0;
+  await openSignIn(ew, { openIn: "default" });
+  const ewDefault = readFileSync(fake.opened[0]?.[0] ?? "/nonexistent", "utf8");
+  expect("openIn default: no BROWSER helper", ewDefault.includes("BROWSER"), false);
+  fake.now += 16_000;
+  fake.opened.length = 0;
+  await openSignIn(ew, { chromeProfile: "Profile 9" });
+  const ewHelper = readFileSync(join(tmpdir(), "claude-usage-browser-ew"), "utf8");
+  expect("custom profile box used", ewHelper.includes("'--profile-directory=Profile 9'"), true);
+  heard.length = 0;
   expect("EW: own config dir", ewScript.includes("export CLAUDE_CONFIG_DIR=" + "'" + ew.configDir + "'"), true);
   expect("EW: email", ewScript.includes("--email 'eaglewatch9002@eaglewatch.ph'"), true);
   expect("quotes awkward paths", ewScript.includes("'/x/it'\\''s claude' auth login"), true);
@@ -159,6 +188,7 @@ if (typeof usage.checkSignIn === "function") {
   const good = usage.lastGoodUsage(me);
   expect("after sign-in: last good is now", good?.at, fake.now);
   expect("after sign-in: no sign-in needed", usage.signInNeeded?.(me), false);
+  expect("after sign-in: no longer signing in", signInMod.signingIn?.(me), false);
 } else {
   fail++;
   console.log("FAIL checkSignIn is not exported");

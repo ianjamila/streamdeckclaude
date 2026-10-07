@@ -37,10 +37,15 @@ async function profileDirForEmail(email: string): Promise<string | undefined> {
 // e.g. "Profile 1") or the email signed in to it. An email no profile is
 // signed in to falls through to --profile-email, which a cold-started Chrome
 // still honours; otherwise Chrome opens the last-used profile.
-async function chromeArgs(url: string, profile: string): Promise<string[]> {
+// `open` arguments that start Chrome on that profile; the URL goes last.
+export async function chromeProfileArgs(profile: string): Promise<string[]> {
   const dir = profile.includes("@") ? await profileDirForEmail(profile) : profile;
   const flag = dir ? `--profile-directory=${dir}` : `--profile-email=${profile}`;
-  return ["-na", "Google Chrome", "--args", flag, url];
+  return ["-na", "Google Chrome", "--args", flag];
+}
+
+async function chromeArgs(url: string, profile: string): Promise<string[]> {
+  return [...(await chromeProfileArgs(profile)), url];
 }
 
 function openInChrome(args: string[]): Promise<void> {

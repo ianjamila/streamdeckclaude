@@ -395,6 +395,13 @@ function announce(account: Account, result: Result<UsageResponse>): void {
   }
 }
 
+// Redraw every key of the account from its latest result, without a fetch
+// (e.g. to show "SIGNING IN" after a tap).
+export function reannounce(account: Account): void {
+  const value = stateFor(account).cached?.value;
+  if (value) announce(account, value);
+}
+
 // While an account needs signing in, watch its credentials so signing in
 // again updates every key within SIGN_IN_POLL_MS instead of waiting for the
 // next tick (or a tap on each key).
