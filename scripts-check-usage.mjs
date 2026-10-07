@@ -9,6 +9,7 @@ const fake = {
   onAuthStatus: () => {}, // what `claude auth status` does
   fetches: 0,
   logs: [],
+  opened: [], // args of each /usr/bin/open call
 };
 globalThis.__fake = fake;
 Date.now = () => fake.now;
@@ -37,6 +38,7 @@ const fakeModules = {
         if (!creds) throw Object.assign(new Error("not found"), { code: 44 });
         return { stdout: JSON.stringify(creds) + "\\n", stderr: "" };
       }
+      if (cmd === "/usr/bin/open") { f.opened.push(args); return { stdout: "", stderr: "" }; }
       if (args[0] === "auth" && args[1] === "status") { f.onAuthStatus(); return { stdout: "", stderr: "" }; }
       throw new Error("unexpected exec " + cmd);
     };`,
@@ -61,7 +63,9 @@ registerHooks({
 Object.defineProperty(process, "platform", { value: "darwin" });
 const usage = await import("./src/usage.ts");
 const { ACCOUNTS } = await import("./src/accounts.ts");
+const signInMod = await import("./src/sign-in.ts").catch((e) => ({ loadError: e }));
 const me = ACCOUNTS[0];
+const ew = ACCOUNTS[1];
 const SERVICE = "Claude Code-credentials";
 const M = 60_000, H = 60 * M;
 
@@ -99,6 +103,36 @@ expect("dead login: no false 'renewed' log", fake.logs.some((l) => l.includes("r
 expect("dead login: says renewal failed", fake.logs.some((l) => l.startsWith("warn") && l.includes("still expired")), true);
 expect("dead login: no doomed fetch with an expired token", fake.fetches, 0);
 expect("dead login: broadcast failure", heard.splice(0), [["me", false]]);
+expect("dead login: sign-in needed", usage.signInNeeded?.(me), true);
+expect("other account unaffected", usage.signInNeeded?.(ew), false);
+
+// 2b. Tapping the key now opens Terminal on a sign-in script for that
+// account (not the usage page), and a double tap doesn't open two.
+if (signInMod.loadError) {
+  fail++;
+  console.log("FAIL src/sign-in.ts:", signInMod.loadError.message);
+} else {
+  const { openSignIn, signInScript } = signInMod;
+  const { execFileSync } = await import("child_process"); // real one: the fake is keyed "node:child_process"
+  const { readFileSync, statSync } = await import("node:fs");
+  expect("tap opens sign-in", await openSignIn(me), true);
+  expect("one open call", fake.opened.length, 1);
+  const file = fake.opened[0]?.[0] ?? "";
+  expect("opens a .command file", file.endsWith(".command"), true);
+  const script = readFileSync(file, "utf8");
+  expect("script is executable", (statSync(file).mode & 0o100) !== 0, true);
+  expect("ME: runs login with ME email", script.includes("auth login --claudeai --email 'jamilaian21@gmail.com'"), true);
+  expect("ME: default config dir (unset)", script.includes("unset CLAUDE_CONFIG_DIR"), true);
+  expect("script passes zsh -n", (() => { try { execFileSync("/bin/zsh", ["-n", file]); return true; } catch { return false; } })(), true);
+  expect("double tap: no second window", [await openSignIn(me), fake.opened.length], [true, 1]);
+  fake.now += 16_000;
+  expect("tap after 16s opens again", [await openSignIn(me), fake.opened.length], [true, 2]);
+  const ewScript = signInScript(ew, "/x/it's claude");
+  expect("EW: own config dir", ewScript.includes("export CLAUDE_CONFIG_DIR=" + "'" + ew.configDir + "'"), true);
+  expect("EW: email", ewScript.includes("--email 'eaglewatch9002@eaglewatch.ph'"), true);
+  expect("quotes awkward paths", ewScript.includes("'/x/it'\\''s claude' auth login"), true);
+  fake.opened.length = 0;
+}
 
 // 3. Another key ticks 10s later: it must see the failure too, not the
 // 9-hour-old numbers dressed up as a fresh success.
@@ -124,6 +158,7 @@ if (typeof usage.checkSignIn === "function") {
   expect("after sign-in: ok from cache", [r.ok, fake.fetches], [true, 1]);
   const good = usage.lastGoodUsage(me);
   expect("after sign-in: last good is now", good?.at, fake.now);
+  expect("after sign-in: no sign-in needed", usage.signInNeeded?.(me), false);
 } else {
   fail++;
   console.log("FAIL checkSignIn is not exported");

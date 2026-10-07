@@ -188,7 +188,7 @@ async function readCredentials(
   return { creds: JSON.parse(raw) as Credentials, source: "file" };
 }
 
-async function findClaudeBinary(): Promise<string | undefined> {
+export async function findClaudeBinary(): Promise<string | undefined> {
   for (const bin of CLAUDE_BINARIES) {
     try {
       await access(bin, constants.X_OK);
@@ -413,6 +413,11 @@ function watchSignIn(account: Account, failed: boolean): void {
   const timer = setInterval(() => void checkSignIn(account), SIGN_IN_POLL_MS);
   timer.unref();
   state.signInWatch = { failedToken, timer };
+}
+
+// True while the account's latest result says it must be signed in again.
+export function signInNeeded(account: Account): boolean {
+  return stateFor(account).signInWatch !== undefined;
 }
 
 // One watcher pass: if the account's token changed since it failed, fetch

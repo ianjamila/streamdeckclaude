@@ -12,12 +12,14 @@ import {
   invalidateUsageCache,
   lastGoodUsage,
   onUsageResult,
+  signInNeeded,
   type Result,
   type UsageResponse,
 } from "../usage.js";
 import { tileState } from "../tile-state.js";
 import { renderError, renderLoading } from "../render.js";
 import { openSettings, type OpenSettings } from "../open-settings.js";
+import { openSignIn } from "../sign-in.js";
 
 // Every usage key refreshes on the same cadence; the shared per-account cache
 // in usage.ts keeps that to one HTTP call per account per CACHE_TTL_MS.
@@ -81,11 +83,15 @@ export abstract class UsageKeyAction extends SingletonAction<UsageKeySettings> {
   }
 
   override async onKeyDown(ev: KeyDownEvent<UsageKeySettings>): Promise<void> {
-    // Tap forces a fresh fetch — useful for recovery after sleep — and
-    // opens the Settings page in that account's browser profile. Fire both
-    // in parallel so the user isn't waiting on the network call.
     const key = this.keys.get(ev.action.id);
     const account = key?.account ?? accountById(ev.payload.settings.account);
+    // Account needs signing in: open Terminal on the sign-in instead. No
+    // fetch here — a renewal running alongside the sign-in could race it;
+    // the sign-in watcher redraws every key once the new login lands.
+    if (signInNeeded(account) && (await openSignIn(account))) return;
+    // Otherwise a tap forces a fresh fetch — useful for recovery after
+    // sleep — and opens the Settings page in that account's browser
+    // profile, in parallel so the user isn't waiting on the network call.
     invalidateUsageCache(account);
     if (ev.action.isKey()) void this.tick(ev.action);
     await openSettings(account, ev.payload.settings);
