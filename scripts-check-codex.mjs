@@ -140,5 +140,74 @@ expect("keyring login: missing auth.json says nothing", (await m.readCodexStatus
 writeFileSync(join(later, "rollout-e.jsonl"), refused(realNow - 20 * M, "t7", { codex_error_info: "other", message: "unexpected status 401 Unauthorized" }) + "\n");
 expect("keyring login: a 401 still means signed out", (await m.readCodexStatus()).hint, "SIGN-IN");
 
+// Live reading from ChatGPT (codex-live.ts): read-only use of Codex's login.
+const live = await import("./src/codex-live.ts");
+writeFileSync(join(home, "config.toml"), 'model = "x"\n');
+const jwt = (expMs) => `h.${Buffer.from(JSON.stringify({ exp: Math.floor(expMs / 1000) })).toString("base64url")}.s`;
+const login = (o) => writeFileSync(join(home, "auth.json"), JSON.stringify(o));
+login({ auth_mode: "chatgpt", tokens: { access_token: jwt(realNow + 24 * H), account_id: "acct-1", refresh_token: "r" } });
+expect("login: valid ChatGPT token", (await live.readCodexLogin())?.accountId, "acct-1");
+login({ auth_mode: "chatgpt", tokens: { access_token: jwt(realNow + 30_000), account_id: "acct-1" } });
+expect("login: expiring token is skipped (never refreshed)", await live.readCodexLogin(), undefined);
+login({ auth_mode: "apikey", OPENAI_API_KEY: "k", tokens: { access_token: jwt(realNow + 24 * H) } });
+expect("login: API-key login has no ChatGPT usage", await live.readCodexLogin(), undefined);
+login({});
+expect("login: empty", await live.readCodexLogin(), undefined);
+login({ auth_mode: "chatgpt", tokens: { access_token: jwt(realNow + 24 * H), account_id: "acct-1" } });
+writeFileSync(join(home, "config.toml"), 'cli_auth_credentials_store = "keyring"\n');
+expect("login: keyring store → not read", await live.readCodexLogin(), undefined);
+writeFileSync(join(home, "config.toml"), 'model = "x"\n');
+
+// Reply shape seen 2026-10-09 (prolite: weekly window only).
+const body = { plan_type: "prolite", rate_limit: { allowed: true, limit_reached: false, primary_window: { used_percent: 7, limit_window_seconds: 604800, reset_after_seconds: 1000, reset_at: nowS + 1000 }, secondary_window: null }, rate_limit_reached_type: null };
+const ls = live.liveSnapshot(body, 123);
+expect("live: weekly window mapped", [m.windowLabel(m.findWindow(ls.limits, "weekly")), m.findWindow(ls.limits, "weekly").used_percent, ls.limits.primary.resets_at, ls.at], ["7D", 7, nowS + 1000, 123]);
+expect("live: no 5h window", m.findWindow(ls.limits, "short"), undefined);
+expect("live: limit_reached flag kept", live.liveSnapshot({ ...body, rate_limit: { ...body.rate_limit, limit_reached: true } }, 1).limits.rate_limit_reached_type, "limit");
+expect("live: no windows → nothing", live.liveSnapshot({ rate_limit: { primary_window: null, secondary_window: null } }, 1), undefined);
+
+let seen;
+const fakeFetch = (status, json, thrown) => async (url, init) => { seen = { url, init }; if (thrown) throw new Error(thrown); return { ok: status === 200, status, json: async () => json }; };
+let lr = await live.fetchCodexLive(fakeFetch(200, body));
+expect("fetch: ok", lr.ok && m.findWindow(lr.snap.limits, "weekly").used_percent, 7);
+expect("fetch: bearer + account headers, usage URL", [seen.url, seen.init.headers.Authorization.startsWith("Bearer h."), seen.init.headers["ChatGPT-Account-Id"]], ["https://chatgpt.com/backend-api/wham/usage", true, "acct-1"]);
+expect("fetch: 401", (await live.fetchCodexLive(fakeFetch(401, {}))).reason, "HTTP 401");
+expect("fetch: offline", (await live.fetchCodexLive(fakeFetch(0, null, "fetch failed"))).reason, "fetch failed");
+login({});
+seen = undefined;
+expect("fetch: no login → no request", [(await live.fetchCodexLive(fakeFetch(200, body))).ok, seen], [false, undefined]);
+
+// Shared cache: every 5 min, retry 2 min after a failure, a tap after 15s.
+let calls = 0, answer = { ok: true, snap: ls };
+const cache = live.createLiveCache(async () => { calls++; return answer; });
+const t0 = 1_000_000;
+let g = await cache.get(t0);
+expect("cache: first ask", [calls, g.snap?.at, g.changedReason], [1, 123, true]);
+await cache.get(t0 + 60_000);
+expect("cache: not again within 5 min", calls, 1);
+await cache.get(t0 + 10_000, true);
+expect("cache: tap within 15s doesn't ask", calls, 1);
+await cache.get(t0 + 20_000, true);
+expect("cache: tap after 15s asks", calls, 2);
+answer = { ok: false, reason: "HTTP 500" };
+g = await cache.get(t0 + 20_000 + 5 * 60_000);
+expect("cache: failure keeps last good reading", [calls, g.snap?.at, g.reason, g.changedReason], [3, 123, "HTTP 500", true]);
+await cache.get(t0 + 20_000 + 6 * 60_000);
+expect("cache: no retry within 2 min", calls, 3);
+await cache.get(t0 + 20_000 + 7 * 60_000 + 1);
+expect("cache: retry after 2 min", calls, 4);
+
+// Status: a live reading newer than the refused turns shows the reset;
+// an older one gives way to the session logs.
+login({ auth_mode: "chatgpt", tokens: { access_token: jwt(realNow + 24 * H) } });
+writeFileSync(join(later, "rollout-e.jsonl"), [refused(realNow - 30 * M, "t10", limitErr), refused(realNow - 20 * M, "t11", limitErr)].join("\n") + "\n");
+expect("status: limit without live", (await m.readCodexStatus()).limit?.until > 0, true);
+const fresh = live.liveSnapshot(body, realNow);
+const st4 = await m.readCodexStatus(realNow, fresh);
+expect("status: newer live reading clears the limit", [st4.ok, st4.limit, st4.snap?.at], [true, undefined, realNow]);
+const oldLive = live.liveSnapshot(body, realNow - 2 * H);
+const st5 = await m.readCodexStatus(realNow, oldLive);
+expect("status: older live reading gives way", [st5.limit?.until > 0, st5.snap?.at], [true, realNow - 60 * M]);
+
 console.log(fail ? `${fail} FAILED` : "all codex checks passed");
 process.exit(fail ? 1 : 0);

@@ -299,12 +299,16 @@ export type CodexStatus =
   | { ok: true; snap?: undefined; limit: CodexLimit }
   | { ok: false; hint: string; attention?: boolean };
 
-export async function readCodexStatus(now = Date.now()): Promise<CodexStatus> {
+// `live`: the latest reading from ChatGPT (codex-live.ts), if any. Whichever
+// of it and the newest session-log snapshot is newer wins.
+export async function readCodexStatus(now = Date.now(), live?: CodexSnapshot): Promise<CodexStatus> {
   const files = await recentSessionFiles();
-  if (files.length === 0) return { ok: false, hint: "NO SESSIONS" };
+  if (files.length === 0) return live ? { ok: true, snap: live } : { ok: false, hint: "NO SESSIONS" };
   const loginAt = await loginFileTime();
   if (loginAt === 0) return { ok: false, hint: "SIGN-IN", attention: true };
-  const { snap, turnStarts, errors } = await scanFiles(files);
+  const scan = await scanFiles(files);
+  const { turnStarts, errors } = scan;
+  const snap = live && (!scan.snap || live.at > scan.snap.at) ? live : scan.snap;
   const snapAt = snap?.at ?? 0;
   // Only errors after the newest snapshot say anything about now, and a
   // sign-in since a turn was refused for sign-in fixed that one (keyring
