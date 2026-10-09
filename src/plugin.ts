@@ -9,6 +9,7 @@ import { PeakHoursAction } from "./actions/peak-hours.js";
 import { CodexUsageAction } from "./actions/codex-usage.js";
 import { CpuUsageAction } from "./actions/cpu-usage.js";
 import { CpuTempAction } from "./actions/cpu-temp.js";
+import { MemoryAction } from "./actions/memory.js";
 
 streamDeck.logger.setLevel(LogLevel.INFO);
 
@@ -20,6 +21,7 @@ streamDeck.actions.registerAction(new PeakHoursAction());
 streamDeck.actions.registerAction(new CodexUsageAction());
 streamDeck.actions.registerAction(new CpuUsageAction());
 streamDeck.actions.registerAction(new CpuTempAction());
+streamDeck.actions.registerAction(new MemoryAction());
 
 void verifyUsage();
 

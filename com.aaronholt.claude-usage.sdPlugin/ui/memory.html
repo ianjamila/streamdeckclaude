@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        margin: 0;
+        padding: 12px 16px;
+        background: #2d2d2d;
+        color: #d8d8d8;
+        font: 13px -apple-system, "Segoe UI", Arial, sans-serif;
+      }
+      .item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+      label {
+        flex: 0 0 90px;
+        text-align: right;
+      }
+      select {
+        flex: 1;
+        min-width: 0;
+        padding: 4px 6px;
+        background: #3d3d3d;
+        color: #d8d8d8;
+        border: 1px solid #555;
+        border-radius: 3px;
+        font: inherit;
+      }
+      .hint {
+        margin: 4px 0 0 102px;
+        color: #9a9a9a;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Values read by renderMemoryKey / MemoryAction (src/memory-key.ts, src/actions/memory.ts). -->
+    <div class="item">
+      <label for="show">Show</label>
+      <select id="show">
+        <option value="free">GB free</option>
+        <option value="used-pct">% used</option>
+        <option value="used-gb">GB used</option>
+      </select>
+    </div>
+    <div class="item">
+      <label for="warn">Low below</label>
+      <select id="warn">
+        <option value="4">4 GB free</option>
+        <option value="5">5 GB free</option>
+        <option value="6">6 GB free</option>
+        <option value="7">7 GB free</option>
+        <option value="8">8 GB free</option>
+        <option value="10">10 GB free</option>
+        <option value="12">12 GB free</option>
+        <option value="16">16 GB free</option>
+      </select>
+    </div>
+    <div class="item">
+      <label for="banner">Banner</label>
+      <select id="banner">
+        <option value="on">When it drops below the line</option>
+        <option value="off">Never</option>
+      </select>
+    </div>
+    <p class="hint">Red below the line, yellow within 3 GB of it, green above (macOS memory pressure can push it to yellow or red sooner). “Free” counts what Activity Monitor counts: total minus App, Wired and Compressed memory. The banner names the biggest apps; click it to open Activity Monitor.</p>
+
+    <script>
+      // Stream Deck calls this global when the Property Inspector opens.
+      function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
+        const settings = (JSON.parse(actionInfo).payload || {}).settings || {};
+        const fields = { show: "free", warn: "7", banner: "on" };
+
+        const ws = new WebSocket("ws://127.0.0.1:" + port);
+        ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
+        for (const [id, fallback] of Object.entries(fields)) {
+          const select = document.getElementById(id);
+          select.value = settings[id] || fallback;
+          select.addEventListener("change", () => {
+            settings[id] = select.value;
+            ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+          });
+        }
+      }
+    </script>
+  </body>
+</html>
