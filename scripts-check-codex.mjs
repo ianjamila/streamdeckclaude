@@ -22,6 +22,7 @@ let home;
 if (synthetic) {
   home = mkdtempSync(join(tmpdir(), "codex-check-"));
   process.env.CODEX_HOME = home;
+  writeFileSync(join(home, "auth.json"), "{}"); // signed in
 }
 const m = await import("./src/codex.ts");
 let fail = 0;
@@ -85,15 +86,59 @@ writeFileSync(join(today, "rollout-d.jsonl"), [turn(realNow - 40 * M), turn(real
 st2 = await m.readCodexStatus();
 expect("files: replies again → ok", st2.ok, true);
 
-// The window a tap on a CHECK CODEX key opens.
-const { codexCheckScript } = await import("./src/codex-check.ts");
-const { execFileSync } = await import("node:child_process");
-const script = codexCheckScript("/x/it's codex");
-expect("check: runs login status", script.includes("'/x/it'\\''s codex' login status"), true);
-expect("check: offers codex login", script.includes("then echo; '/x/it'\\''s codex' login; fi"), true);
-const scriptFile = join(home, "check.command");
-writeFileSync(scriptFile, script);
-expect("check: zsh -n", (() => { try { execFileSync("/bin/zsh", ["-n", scriptFile]); return true; } catch { return false; } })(), true);
+// Turns Codex refused: usage limit used up, or signed out (2026-10-09: four
+// refused turns read as "CHECK CODEX" and hid the 100%).
+const LIMIT_MSG = "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 14th, 2026 11:29 AM.";
+expect("reset: full date (local time)", m.limitResetFrom(LIMIT_MSG, now0), new Date(2026, 9, 14, 11, 29).getTime());
+const errAt = new Date(2026, 9, 9, 10, 0).getTime();
+expect("reset: time only, later today", m.limitResetFrom("try again at 3:05 PM.", errAt), new Date(2026, 9, 9, 15, 5).getTime());
+expect("reset: time only, already passed → tomorrow", m.limitResetFrom("try again at 9:00 AM.", errAt), new Date(2026, 9, 10, 9, 0).getTime());
+expect("reset: 12 AM is midnight", m.limitResetFrom("try again at Oct 14th, 2026 12:15 AM.", errAt), new Date(2026, 9, 14, 0, 15).getTime());
+expect("reset: no time given", m.limitResetFrom("You've hit your usage limit.", errAt), undefined);
+expect("classify: usage limit", m.classifyTurnError({ codex_error_info: "usage_limit_exceeded", message: LIMIT_MSG }, now0)?.kind, "limit");
+expect("classify: 401 is sign-in", m.classifyTurnError({ codex_error_info: "other", message: "unexpected status 401 Unauthorized: Missing bearer" }, now0)?.kind, "auth");
+expect("classify: overloaded isn't explained", m.classifyTurnError({ codex_error_info: "server_overloaded", message: "try later" }, now0), undefined);
+const snapW = { limits: { primary: { used_percent: 100, window_minutes: 10080, resets_at: 2_000_000_000 }, secondary: null }, at: 1 };
+expect("until: falls back to the used-up window", m.limitUntil({ kind: "limit", at: 5 }, snapW), 2_000_000_000_000);
+expect("until: else a week", m.limitUntil({ kind: "limit", at: 5 }, undefined), 5 + 7 * 24 * H);
+
+const refused = (ms, id, error) => [
+  JSON.stringify({ timestamp: new Date(ms).toISOString(), type: "event_msg", payload: { type: "task_started", turn_id: id } }),
+  JSON.stringify({ timestamp: new Date(ms + 5000).toISOString(), type: "event_msg", payload: { type: "token_count", info: null, rate_limits: { primary: null, secondary: null, credits: { has_credits: false } } } }),
+  JSON.stringify({ timestamp: new Date(ms + 5000).toISOString(), type: "event_msg", payload: { type: "task_complete", turn_id: id, error } }),
+].join("\n");
+const later = join(home, "sessions", "2026", "10", "07"); mkdirSync(later, { recursive: true });
+// The newest usage snapshot is an hour old; the refused turns come after it.
+writeFileSync(join(today, "rollout-d.jsonl"), ev(new Date(realNow - 60 * M).toISOString(), { used_percent: 100, window_minutes: 10080, resets_at: nowS + 86400 }, null) + "\n");
+const limitErr = { codex_error_info: "usage_limit_exceeded", message: "You've hit your usage limit. try again at Dec 31st, 2099 11:29 AM." };
+writeFileSync(join(later, "rollout-e.jsonl"), [refused(realNow - 50 * M, "t1", limitErr), refused(realNow - 30 * M, "t2", limitErr), refused(realNow - 20 * M, "t3", limitErr)].join("\n") + "\n");
+let st3 = await m.readCodexStatus();
+expect("files: refused for limit → 100% until reset, not CHECK CODEX", [st3.ok, st3.limit?.until, st3.snap?.at > 0], [true, new Date(2099, 11, 31, 11, 29).getTime(), true]);
+expect("files: limit over → back to the snapshot", (await m.readCodexStatus(new Date(2100, 0, 1).getTime())).limit, undefined);
+// Turns that failed for other reasons still count as silent.
+writeFileSync(join(later, "rollout-e.jsonl"), [refused(realNow - 50 * M, "t1", limitErr), refused(realNow - 30 * M, "t4", { codex_error_info: "server_overloaded", message: "x" }), refused(realNow - 20 * M, "t5", { codex_error_info: "other", message: "stream disconnected" })].join("\n") + "\n");
+st3 = await m.readCodexStatus();
+expect("files: unexplained failures → CHECK CODEX", [st3.ok, st3.hint], [false, "CHECK CODEX"]);
+// Refused for sign-in: SIGN-IN until auth.json changes after the refusal.
+writeFileSync(join(later, "rollout-e.jsonl"), refused(realNow - 20 * M, "t6", { codex_error_info: "other", message: "unexpected status 401 Unauthorized" }) + "\n");
+utimesSync(join(home, "auth.json"), (realNow - 60 * M) / 1000, (realNow - 60 * M) / 1000);
+st3 = await m.readCodexStatus();
+expect("files: 401 → SIGN-IN", [st3.ok, st3.hint, st3.attention], [false, "SIGN-IN", true]);
+utimesSync(join(home, "auth.json"), (realNow - M) / 1000, (realNow - M) / 1000);
+expect("files: signed in since → ok", (await m.readCodexStatus()).ok, true);
+// Signed in again after a limit refusal then a 401: the limit still shows.
+writeFileSync(join(later, "rollout-e.jsonl"), [refused(realNow - 30 * M, "t8", limitErr), refused(realNow - 20 * M, "t9", { codex_error_info: "other", message: "unexpected status 401 Unauthorized" })].join("\n") + "\n");
+expect("files: sign-in clears the 401, not the limit", (await m.readCodexStatus()).limit?.until, new Date(2099, 11, 31, 11, 29).getTime());
+// No login file at all (and no refused turns to go by).
+writeFileSync(join(later, "rollout-e.jsonl"), "\n");
+const { rmSync } = await import("node:fs");
+rmSync(join(home, "auth.json"));
+st3 = await m.readCodexStatus();
+expect("no auth.json → SIGN-IN", [st3.ok, st3.hint, st3.attention], [false, "SIGN-IN", true]);
+writeFileSync(join(home, "config.toml"), 'model = "x"\ncli_auth_credentials_store = "keyring"\n');
+expect("keyring login: missing auth.json says nothing", (await m.readCodexStatus()).ok, true);
+writeFileSync(join(later, "rollout-e.jsonl"), refused(realNow - 20 * M, "t7", { codex_error_info: "other", message: "unexpected status 401 Unauthorized" }) + "\n");
+expect("keyring login: a 401 still means signed out", (await m.readCodexStatus()).hint, "SIGN-IN");
 
 console.log(fail ? `${fail} FAILED` : "all codex checks passed");
 process.exit(fail ? 1 : 0);
