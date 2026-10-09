@@ -34,6 +34,14 @@ function chip(x: number, y: number, size: number, color: string): string {
     <path d="M8 1.5 V4.5 M12 1.5 V4.5 M8 15.5 V18.5 M12 15.5 V18.5 M1.5 8 H4.5 M1.5 12 H4.5 M15.5 8 H18.5 M15.5 12 H18.5"/></g>`;
 }
 
+// Memory module (RAM stick) with contacts along the bottom edge.
+function ramStick(x: number, y: number, size: number, color: string): string {
+  return `<g transform="translate(${x} ${y}) scale(${size / 20})" fill="none" stroke="${color}"
+    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="1.5" y="4.5" width="17" height="9" rx="1"/>
+    <path d="M5 7.5 V10.5 M8.5 7.5 V10.5 M11.5 7.5 V10.5 M15 7.5 V10.5 M4 13.5 V16.5 M7 13.5 V16.5 M10 13.5 V16.5 M13 13.5 V16.5 M16 13.5 V16.5"/></g>`;
+}
+
 export const CLAUDE_THEME: Theme = {
   bg: "#141413",
   fg: "#faf9f5",
@@ -60,6 +68,8 @@ export const SYSTEM_THEME: Theme = {
   font: SANS,
   glyph: chip,
 };
+
+export const MEMORY_THEME: Theme = { ...SYSTEM_THEME, glyph: ramStick };
 
 // Traffic-light colours for the CPU keys: cool / warm / hot.
 export type Level = "ok" | "mid" | "hot";

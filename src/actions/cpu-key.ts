@@ -18,6 +18,15 @@ type Key<S extends JsonObject> = {
   last?: SystemSnapshot;
 };
 
+/** Activity Monitor on macOS, Task Manager on Windows. Shared with the Memory key. */
+export function openActivityMonitor(): void {
+  const [cmd, args] =
+    process.platform === "win32" ? ["taskmgr", []] : ["open", ["-a", "Activity Monitor"]];
+  execFile(cmd, args, (e) => {
+    if (e) streamDeck.logger.error(`open activity monitor failed: ${e.message}`);
+  });
+}
+
 // Shared base for the CPU keys: each visible key subscribes to the shared
 // sampler and redraws on every snapshot. Tap opens Activity Monitor.
 export abstract class CpuKeyAction<S extends JsonObject> extends SingletonAction<S> {
@@ -51,11 +60,7 @@ export abstract class CpuKeyAction<S extends JsonObject> extends SingletonAction
   }
 
   override onKeyDown(_ev: KeyDownEvent<S>): void {
-    const [cmd, args] =
-      process.platform === "win32" ? ["taskmgr", []] : ["open", ["-a", "Activity Monitor"]];
-    execFile(cmd, args, (e) => {
-      if (e) streamDeck.logger.error(`open activity monitor failed: ${e.message}`);
-    });
+    openActivityMonitor();
   }
 
   private async draw(action: KeyAction<S>, snap: SystemSnapshot, settings: S): Promise<void> {

@@ -1,8 +1,8 @@
 {
   "Name": "Claude Usage",
-  "Version": "1.9.0.0",
+  "Version": "1.10.0.0",
   "Author": "Aaron Holt",
-  "Description": "Live Claude usage for one or two Claude Code accounts (session, weekly all-models, weekly scoped-model, extra credits — pick the account per key) plus Codex CLI usage, a Peak Hours key, and CPU load / CPU temperature keys.",
+  "Description": "Live Claude usage for one or two Claude Code accounts (session, weekly all-models, weekly scoped-model, extra credits — pick the account per key) plus Codex CLI usage, a Peak Hours key, and CPU load, CPU temperature and memory keys.",
   "Icon": "imgs/plugin/marketplace",
   "Category": "Claude Usage",
   "CategoryIcon": "imgs/plugin/category",
@@ -164,6 +164,24 @@
       "States": [
         {
           "Image": "imgs/actions/cpu-temp/key",
+          "TitleAlignment": "middle",
+          "ShowTitle": false
+        }
+      ]
+    },
+    {
+      "Name": "Memory",
+      "UUID": "com.aaronholt.claude-usage.memory",
+      "Icon": "imgs/actions/memory/icon",
+      "Tooltip": "Memory available (GB free, the way Activity Monitor counts it), refreshed every 2 seconds, with a 5-minute graph. Green / yellow / red against your low-memory line (default 7 GB), plus a banner when it drops below. Tap to open Activity Monitor.",
+      "PropertyInspectorPath": "ui/memory.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": false,
+      "States": [
+        {
+          "Image": "imgs/actions/memory/key",
           "TitleAlignment": "middle",
           "ShowTitle": false
         }
