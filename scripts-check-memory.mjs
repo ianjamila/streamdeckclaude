@@ -41,7 +41,7 @@ const used = m.usedFromVmStat(vm);
 // App (anon - purgeable) + wired + compressor = 1200860 + 293095 + 334489 pages.
 expect("used bytes", used.used, (1200860 + 293095 + 334489) * 16384);
 expect("compressed", used.compressed, 334489 * 16384);
-expect("used ~27.9G", m.formatGiB(used.used), "28G");
+expect("used ~27.9GB", m.formatGiB(used.used), "28GB");
 expect("not vm_stat", m.parseVmStat("garbage"), undefined);
 expect("missing field", m.usedFromVmStat({ pageSize: 4096, pages: { "Pages free": 1 } }), undefined);
 
@@ -53,10 +53,10 @@ expect("pressure 2", m.parsePressure("2"), "warn");
 expect("pressure 4", m.parsePressure("4"), "critical");
 expect("pressure junk", m.parsePressure(""), undefined);
 
-expect("fmt 8.1", m.formatGiB(8.1 * G), "8.1G");
-expect("fmt 0.4", m.formatGiB(0.4 * G), "0.4G");
-expect("fmt 9.96 → 10", m.formatGiB(9.96 * G), "10G");
-expect("fmt 36", m.formatGiB(36 * G), "36G");
+expect("fmt 8.1", m.formatGiB(8.1 * G), "8.1GB");
+expect("fmt 0.4", m.formatGiB(0.4 * G), "0.4GB");
+expect("fmt 9.96 → 10", m.formatGiB(9.96 * G), "10GB");
+expect("fmt 36", m.formatGiB(36 * G), "36GB");
 
 // Banner fires once per episode, re-arms only 1 GB above the line.
 expect("edge above", m.lowMemoryEdge(9, 7, false), { fire: false, bannered: false });
@@ -99,10 +99,10 @@ expect("banner text bare", k.lowMemoryMessage(snap(6.8), 7, []), "6.8 GB free of
 // The rendered key carries the right number, label and subtitle.
 const svg = (s, set) => Buffer.from(k.renderMemoryKey(s, set).split(",")[1], "base64").toString();
 const has = (name, text, ...parts) => { for (const p of parts) if (!text.includes(p)) { fail++; console.log("FAIL", name, "missing", p); } };
-has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), {}), ">8.1G<", ">RAM FREE<", ">of 36G<", "#facc15");
-has("free no swap", svg(snap(12, { swapUsedBytes: 0 }), {}), ">12G<", ">of 36G<", "#4ade80");
-has("used pct", svg(snap(6, {}), { show: "used-pct" }), ">83%<", ">RAM USED<", ">6.0G free<", "#ff6b6b");
-has("used gb", svg(snap(6, {}), { show: "used-gb" }), ">30G<", ">of 36G<");
+has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), {}), ">8.1GB<", ">RAM FREE<", ">of 36GB<", "#facc15");
+has("free no swap", svg(snap(12, { swapUsedBytes: 0 }), {}), ">12GB<", ">of 36GB<", "#4ade80");
+has("used pct", svg(snap(6, {}), { show: "used-pct" }), ">83%<", ">RAM USED<", ">6.0GB free<", "#ff6b6b");
+has("used gb", svg(snap(6, {}), { show: "used-gb" }), ">30GB<", ">of 36GB<");
 
 if (fail) { console.log(`${fail} check(s) failed`); process.exit(1); }
 console.log("memory checks: all passed");

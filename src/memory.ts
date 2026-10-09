@@ -176,11 +176,11 @@ export function subscribeMemory(fn: Listener): () => void {
   };
 }
 
-/** Bytes → "8.1G" (one decimal under 10 GB, whole numbers above). */
+/** Bytes → "8.1GB" (one decimal under 10 GB, whole numbers above). */
 export function formatGiB(bytes: number): string {
   const g = bytes / GIB;
-  if (g < 9.95) return `${g.toFixed(1)}G`;
-  return `${Math.round(g)}G`;
+  if (g < 9.95) return `${g.toFixed(1)}GB`;
+  return `${Math.round(g)}GB`;
 }
 
 export function toGiB(bytes: number): number {
