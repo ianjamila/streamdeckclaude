@@ -1,4 +1,4 @@
-import { open, readdir, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ageTag } from "./age.js";
@@ -122,26 +122,80 @@ function findRateLimits(x: unknown): CodexRateLimits | undefined {
   return undefined;
 }
 
-// When each turn in the file started (Codex writes "task_started" as it
-// begins replying to a message).
-function turnStartsIn(lines: string[]): number[] {
-  const starts: number[] = [];
+// A turn that ended in an error Codex explained: the usage limit is used up
+// ("limit", with the reset time when the message gives one) or Codex isn't
+// signed in ("auth"). Such turns log no usage snapshot, but they aren't silent.
+export type TurnError =
+  | { kind: "limit"; at: number; until?: number }
+  | { kind: "auth"; at: number };
+
+// Codex writes "task_started" as it begins replying to a message and
+// "task_complete" (with `error` when the reply failed) when it is done.
+type TurnScan = { starts: { at: number; id?: string }[]; errors: (TurnError & { id?: string })[] };
+
+const AUTH_ERROR = /\b401\b|unauthori[sz]ed|not logged in|log ?in again|sign in again/i;
+
+export function classifyTurnError(
+  error: { codex_error_info?: unknown; message?: unknown },
+  at: number
+): TurnError | undefined {
+  const info = typeof error.codex_error_info === "string" ? error.codex_error_info : "";
+  const message = typeof error.message === "string" ? error.message : "";
+  if (info === "usage_limit_exceeded") return { kind: "limit", at, until: limitResetFrom(message, at) };
+  if (/auth/i.test(info) || AUTH_ERROR.test(message)) return { kind: "auth", at };
+  return undefined;
+}
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+// "…try again at Oct 14th, 2026 11:29 AM." (local time), or "…try again at
+// 11:29 AM." when the reset is within a day of the error. Epoch ms, or
+// undefined when the message has neither.
+export function limitResetFrom(message: string, errorAt: number): number | undefined {
+  const time = /(\d{1,2}):(\d{2})\s*([AP]M)/i.exec(message.slice(message.search(/try again at/i)));
+  if (!/try again at/i.test(message) || !time) return undefined;
+  const hour = (Number(time[1]) % 12) + (time[3].toUpperCase() === "PM" ? 12 : 0);
+  const minute = Number(time[2]);
+  const date = /try again at ([A-Za-z]{3})[a-z]*\.? (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})/i.exec(message);
+  if (date) {
+    const month = MONTHS.indexOf(date[1].toLowerCase());
+    if (month < 0) return undefined;
+    return new Date(Number(date[3]), month, Number(date[2]), hour, minute).getTime();
+  }
+  const sameDay = new Date(errorAt);
+  sameDay.setHours(hour, minute, 0, 0);
+  const t = sameDay.getTime();
+  return t > errorAt ? t : t + 24 * 60 * 60_000;
+}
+
+function turnsIn(lines: string[]): TurnScan {
+  const scan: TurnScan = { starts: [], errors: [] };
   for (const line of lines) {
-    if (!line.includes('"task_started"')) continue;
+    const started = line.includes('"task_started"');
+    if (!started && !(line.includes('"task_complete"') && line.includes('"error"'))) continue;
     try {
-      const o = JSON.parse(line) as { timestamp?: string; payload?: { type?: string } };
+      const o = JSON.parse(line) as {
+        timestamp?: string;
+        payload?: { type?: string; turn_id?: string; error?: { codex_error_info?: unknown; message?: unknown } | null };
+      };
       const at = o.timestamp ? Date.parse(o.timestamp) : NaN;
-      if (o.payload?.type === "task_started" && Number.isFinite(at)) starts.push(at);
+      if (!Number.isFinite(at)) continue;
+      const id = o.payload?.turn_id;
+      if (o.payload?.type === "task_started") scan.starts.push({ at, id });
+      else if (o.payload?.type === "task_complete" && o.payload.error) {
+        const error = classifyTurnError(o.payload.error, at);
+        if (error) scan.errors.push({ ...error, id });
+      }
     } catch {
       continue;
     }
   }
-  return starts;
+  return scan;
 }
 
-async function scanFile(file: string): Promise<{ snap?: CodexSnapshot; turnStarts: number[] }> {
+async function scanFile(file: string): Promise<{ snap?: CodexSnapshot } & TurnScan> {
   const lines = (await readTail(file)).split("\n");
-  return { snap: latestIn(lines), turnStarts: turnStartsIn(lines) };
+  return { snap: latestIn(lines), ...turnsIn(lines) };
 }
 
 function latestIn(lines: string[]): CodexSnapshot | undefined {
@@ -165,16 +219,20 @@ export async function readCodexSnapshot(): Promise<CodexSnapshot | undefined> {
   return newestSnapshot(await recentSessionFiles());
 }
 
-async function scanFiles(files: string[]): Promise<{ snap?: CodexSnapshot; turnStarts: number[] }> {
+async function scanFiles(files: string[]): Promise<{ snap?: CodexSnapshot; turnStarts: number[]; errors: TurnError[] }> {
   let best: CodexSnapshot | undefined;
   const turnStarts: number[] = [];
+  const errors: TurnError[] = [];
   for (const file of files) {
     const scan = await scanFile(file).catch(() => undefined);
     if (!scan) continue;
-    turnStarts.push(...scan.turnStarts);
+    // A turn that ended in an explained error isn't a silent one.
+    const explained = new Set(scan.errors.map((e) => e.id).filter(Boolean));
+    turnStarts.push(...scan.starts.filter((s) => !s.id || !explained.has(s.id)).map((s) => s.at));
+    errors.push(...scan.errors.map(({ id: _id, ...e }) => e));
     if (scan.snap && (!best || scan.snap.at > best.at)) best = scan.snap;
   }
-  return { snap: best, turnStarts };
+  return { snap: best, turnStarts, errors };
 }
 
 async function newestSnapshot(files: string[]): Promise<CodexSnapshot | undefined> {
@@ -210,16 +268,55 @@ export function staleTag(snapAt: number, now = Date.now()): string | undefined {
   return age < STALE_AFTER_MS ? undefined : ageTag(age);
 }
 
-// `attention`: the user should look (Codex replies stopped reporting usage),
-// as opposed to there simply being nothing to show yet.
+// Codex keeps its login in CODEX_HOME/auth.json unless config.toml moves it
+// to the system keyring. Returns when that file last changed, 0 when it is
+// missing (signed out), or undefined when the login may be in the keyring
+// (can't tell from here).
+async function loginFileTime(): Promise<number | undefined> {
+  const config = await readFile(join(CODEX_HOME, "config.toml"), "utf8").catch(() => "");
+  if (/^\s*cli_auth_credentials_store\s*=\s*["'](keyring|auto)["']/m.test(config)) return undefined;
+  const s = await stat(join(CODEX_HOME, "auth.json")).catch(() => undefined);
+  return s ? s.mtimeMs : 0;
+}
+
+// When the limit message gives no reset time: the snapshot's used-up window
+// says when it resets; failing that, assume a week (the longest window).
+export function limitUntil(limit: Extract<TurnError, { kind: "limit" }>, snap?: CodexSnapshot): number {
+  if (limit.until) return limit.until;
+  const full = [snap?.limits.primary, snap?.limits.secondary]
+    .filter((w): w is CodexWindow => !!w && w.used_percent >= 100)
+    .map((w) => w.resets_at * 1000);
+  return full.length ? Math.max(...full) : limit.at + 7 * 24 * 60 * 60_000;
+}
+
+// `attention`: the user should look (Codex is signed out, or its replies
+// stopped reporting usage), as opposed to there simply being nothing to show
+// yet. `limit`: the newest turn was refused because the usage limit is used
+// up; `until` is when Codex said it resets (epoch ms).
+export type CodexLimit = { until: number };
 export type CodexStatus =
-  | { ok: true; snap: CodexSnapshot }
+  | { ok: true; snap: CodexSnapshot; limit?: CodexLimit }
+  | { ok: true; snap?: undefined; limit: CodexLimit }
   | { ok: false; hint: string; attention?: boolean };
 
-export async function readCodexStatus(): Promise<CodexStatus> {
+export async function readCodexStatus(now = Date.now()): Promise<CodexStatus> {
   const files = await recentSessionFiles();
   if (files.length === 0) return { ok: false, hint: "NO SESSIONS" };
-  const { snap, turnStarts } = await scanFiles(files);
-  if (stalledTurns(snap?.at ?? 0, turnStarts)) return { ok: false, hint: "CHECK CODEX", attention: true };
+  const loginAt = await loginFileTime();
+  if (loginAt === 0) return { ok: false, hint: "SIGN-IN", attention: true };
+  const { snap, turnStarts, errors } = await scanFiles(files);
+  const snapAt = snap?.at ?? 0;
+  // Only errors after the newest snapshot say anything about now, and a
+  // sign-in since a turn was refused for sign-in fixed that one (keyring
+  // logins: can't tell).
+  const newest = errors
+    .filter((e) => e.at > snapAt && !(e.kind === "auth" && loginAt && loginAt > e.at))
+    .sort((a, b) => b.at - a.at)[0];
+  if (newest?.kind === "auth") return { ok: false, hint: "SIGN-IN", attention: true };
+  if (stalledTurns(snapAt, turnStarts, now)) return { ok: false, hint: "CHECK CODEX", attention: true };
+  if (newest?.kind === "limit") {
+    const until = limitUntil(newest, snap);
+    if (until > now) return snap ? { ok: true, snap, limit: { until } } : { ok: true, limit: { until } };
+  }
   return snap ? { ok: true, snap } : { ok: false, hint: "NO DATA" };
 }

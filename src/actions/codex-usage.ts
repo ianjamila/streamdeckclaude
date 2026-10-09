@@ -95,11 +95,13 @@ export class CodexUsageAction extends SingletonAction<Settings> {
     return true;
   }
 
-  private async banner(): Promise<void> {
+  private async banner(signedOut: boolean): Promise<void> {
     const file = await prepareCodexCheck().catch(() => undefined);
     await notify({
-      title: "Codex usage stopped updating",
-      message: "Codex replies aren't reporting usage: it may be signed out. Tap the Codex key to check.",
+      title: signedOut ? "Codex is signed out" : "Codex usage stopped updating",
+      message: signedOut
+        ? "Codex can't run or report usage until you sign in. Tap the Codex key to sign in."
+        : "Codex replies aren't reporting usage: it may be signed out. Tap the Codex key to check.",
       group: "claude-usage-codex",
       onClick: file ? openCommandLine(file) : undefined,
       clickHint: "Or click here.",
@@ -115,18 +117,33 @@ export class CodexUsageAction extends SingletonAction<Settings> {
     });
     this.attention = !status.ok && !!status.attention;
     if (status.ok) this.bannered = false;
-    if (this.attention && !this.bannered) {
+    if (this.attention && !this.bannered && !status.ok) {
       this.bannered = true;
-      streamDeck.logger.warn("codex: replies stopped reporting usage");
-      void this.banner();
+      const signedOut = status.hint === "SIGN-IN";
+      streamDeck.logger.warn(signedOut ? "codex: signed out" : "codex: replies stopped reporting usage");
+      void this.banner(signedOut);
     }
     if (!status.ok) {
       await action.setImage(renderError(LABEL, undefined, CODEX_THEME, status.hint));
       return;
     }
-    const { snap } = status;
-    const w = findWindow(snap.limits, key.kind);
-    if (!w) {
+    const { snap, limit } = status;
+    const w = snap && findWindow(snap.limits, key.kind);
+    // Codex refused the newest turn: the limit is used up until `until`,
+    // whatever the last snapshot said.
+    if (limit) {
+      await action.setImage(
+        renderKey({
+          big: formatPercent(100),
+          label: `${LABEL} ${w ? windowLabel(w) : key.kind === "short" ? "5H" : "7D"}`,
+          subtitle: formatResetsIn(new Date(limit.until).toISOString()),
+          accent: true,
+          theme: CODEX_THEME,
+        })
+      );
+      return;
+    }
+    if (!snap || !w) {
       await action.setImage(
         renderKey({
           big: "—",
