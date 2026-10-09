@@ -36,14 +36,6 @@ export function memoryLevel(snap: MemorySnapshot, warn: number): Level {
   return level;
 }
 
-// Swap in use is the clearest sign the Mac has run out of room and is
-// slowing down; show it under the number once there is any to speak of.
-function swapOrTotal(snap: MemorySnapshot): string {
-  const swap = snap.swapUsedBytes;
-  if (swap !== undefined && swap >= 0.05 * 1024 ** 3) return `swap ${formatGiB(swap)}`;
-  return `of ${formatGiB(snap.totalBytes)}`;
-}
-
 export function renderMemoryKey(snap: MemorySnapshot, settings: MemorySettings): string {
   const level = memoryLevel(snap, warnGiB(settings));
   const spark = snap.usedHistory;
@@ -70,7 +62,7 @@ export function renderMemoryKey(snap: MemorySnapshot, settings: MemorySettings):
   return renderKey({
     big: formatGiB(snap.availableBytes),
     label: "RAM FREE",
-    subtitle: swapOrTotal(snap),
+    subtitle: `of ${formatGiB(snap.totalBytes)}`,
     level,
     spark,
     theme: MEMORY_THEME,

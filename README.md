@@ -26,11 +26,11 @@ Tap either key to open Activity Monitor. Temperature comes from the Mac's SMC se
 
 | Key | Shows | Refresh |
 |---|---|---|
-| **Memory** | GB of memory free (or `% used` / GB used — pick in the key's settings), over a five-minute graph of memory used; underneath, swap in use (the clearest sign the Mac is short of memory), or the total when nothing is swapped | 2 s |
+| **Memory** | GB of memory free (or `% used` / GB used — pick in the key's settings), over a five-minute graph of memory used; underneath, your total (`of 36G`) | 2 s |
 
 "Free" is counted the way Activity Monitor does: total memory minus *Memory Used* (App Memory + Wired + Compressed), read from `vm_stat` — cached files don't count as used, because macOS drops them as soon as something needs the room. The number is green above your *Low below* line + 3 GB, yellow within 3 GB of it, red below it (default line: 7 GB). macOS memory pressure can only make it worse: "warning" is at least yellow, "critical" is red.
 
-The first time free memory drops below the line you get a banner naming the biggest apps (helper processes are added into their app, so all of Chrome counts as one); it won't banner again until memory climbs 1 GB back above the line. Click the banner or tap the key to open Activity Monitor. Banners follow `cnotify quiet/off`, and can be turned off per key. On Windows the key shows available memory with no swap or pressure.
+The first time free memory drops below the line you get a banner with how much swap is in use (memory macOS has moved out to the SSD — slow, and the clearest sign the Mac is short of RAM) and the biggest apps (helper processes are added into their app, so all of Chrome counts as one); it won't banner again until memory climbs 1 GB back above the line. Click the banner or tap the key to open Activity Monitor. Banners follow `cnotify quiet/off`, and can be turned off per key. On Windows the key shows available memory with no swap or pressure.
 
 ## Install
 
