@@ -26,11 +26,15 @@ import {
 } from "../render.js";
 import { CODEX_PROFILE, openUrlInProfile, type OpenSettings } from "../open-settings.js";
 import { openCodexCheck, prepareCodexCheck } from "../codex-check.js";
+import { createLiveCache } from "../codex-live.js";
 import { notify } from "../notify.js";
 import { openCommandLine } from "../terminal.js";
 
-// Local file read only (no network), so it can refresh often.
+// Session logs are a local file read (no network), so they refresh often;
+// the live ChatGPT reading is shared by all Codex keys and asked for less
+// often (codex-live.ts).
 const REFRESH_MS = 30_000;
+const live = createLiveCache();
 const USAGE_URL = "https://chatgpt.com/settings/usage?tab=overview";
 const LABEL = "CODEX";
 // A double tap shouldn't open two check windows.
@@ -76,7 +80,7 @@ export class CodexUsageAction extends SingletonAction<Settings> {
   }
 
   override async onKeyDown(ev: KeyDownEvent<Settings>): Promise<void> {
-    if (ev.action.isKey()) void this.tick(ev.action);
+    if (ev.action.isKey()) void this.tick(ev.action, true);
     if (this.attention && (await this.openCheck())) return;
     await openUrlInProfile(USAGE_URL, CODEX_PROFILE, ev.payload.settings);
   }
@@ -108,10 +112,14 @@ export class CodexUsageAction extends SingletonAction<Settings> {
     });
   }
 
-  private async tick(action: KeyAction<Settings>): Promise<void> {
+  private async tick(action: KeyAction<Settings>, force = false): Promise<void> {
     const key = this.keys.get(action.id);
     if (!key) return;
-    const status = await readCodexStatus().catch((e: Error): CodexStatus => {
+    const reading = await live.get(Date.now(), force);
+    if (reading.changedReason) {
+      streamDeck.logger.info(reading.reason ? `codex live: ${reading.reason}` : "codex live: ok");
+    }
+    const status = await readCodexStatus(Date.now(), reading.snap).catch((e: Error): CodexStatus => {
       streamDeck.logger.error(`codex: ${e.message}`);
       return { ok: false, hint: "ERROR" };
     });
