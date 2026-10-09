@@ -75,7 +75,7 @@ export function lowMemoryMessage(
   warn: number,
   top: { name: string; bytes: number }[]
 ): string {
-  const gb = (b: number) => `${formatGiB(b).slice(0, -1)} GB`;
+  const gb = (b: number) => formatGiB(b).replace("GB", " GB");
   let msg = `${gb(snap.availableBytes)} free of ${gb(snap.totalBytes)} (your line: ${warn} GB)`;
   if (snap.swapUsedBytes) msg += ` · swap ${gb(snap.swapUsedBytes)}`;
   if (top.length) msg += `. Biggest: ${top.map((t) => `${t.name} ${gb(t.bytes)}`).join(", ")}`;

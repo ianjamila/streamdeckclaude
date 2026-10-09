@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
   <rect width="144" height="144" fill="#0b1210"/>
   <g transform="translate(118 10) scale(0.9)" fill="none" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1.5" y="4.5" width="17" height="9" rx="1"/><path d="M5 7.5 V10.5 M8.5 7.5 V10.5 M11.5 7.5 V10.5 M15 7.5 V10.5 M4 13.5 V16.5 M7 13.5 V16.5 M10 13.5 V16.5 M13 13.5 V16.5 M16 13.5 V16.5"/></g>
-  <text x="72" y="80" text-anchor="middle" font-family="Inter,'Segoe UI',Arial,sans-serif" font-weight="700" font-size="32" fill="#ffffff">--G</text>
+  <text x="72" y="80" text-anchor="middle" font-family="Inter,'Segoe UI',Arial,sans-serif" font-weight="700" font-size="32" fill="#ffffff">--GB</text>
   <text x="72" y="120" text-anchor="middle" font-family="Inter,'Segoe UI',Arial,sans-serif" font-weight="600" font-size="11" letter-spacing="2" fill="#4ade80">MEMORY</text>
 </svg>
