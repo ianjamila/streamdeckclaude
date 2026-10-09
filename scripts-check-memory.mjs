@@ -99,7 +99,7 @@ expect("banner text bare", k.lowMemoryMessage(snap(6.8), 7, []), "6.8 GB free of
 // The rendered key carries the right number, label and subtitle.
 const svg = (s, set) => Buffer.from(k.renderMemoryKey(s, set).split(",")[1], "base64").toString();
 const has = (name, text, ...parts) => { for (const p of parts) if (!text.includes(p)) { fail++; console.log("FAIL", name, "missing", p); } };
-has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), {}), ">8.1G<", ">RAM FREE<", ">swap 4.6G<", "#facc15");
+has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), {}), ">8.1G<", ">RAM FREE<", ">of 36G<", "#facc15");
 has("free no swap", svg(snap(12, { swapUsedBytes: 0 }), {}), ">12G<", ">of 36G<", "#4ade80");
 has("used pct", svg(snap(6, {}), { show: "used-pct" }), ">83%<", ">RAM USED<", ">6.0G free<", "#ff6b6b");
 has("used gb", svg(snap(6, {}), { show: "used-gb" }), ">30G<", ">of 36G<");
