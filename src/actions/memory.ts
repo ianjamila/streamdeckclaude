@@ -4,6 +4,7 @@ import streamDeck, {
   type DidReceiveSettingsEvent,
   type KeyAction,
   type KeyDownEvent,
+  type KeyUpEvent,
   type WillAppearEvent,
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
@@ -29,6 +30,8 @@ import {
   type MemorySettings,
 } from "../memory-key.js";
 import { notify } from "../notify.js";
+import { ACCESSIBILITY_PANE, openChromeTaskManager } from "../chrome-task-manager.js";
+import { PressTimer } from "../long-press.js";
 import { ACTIVITY_MONITOR_MEMORY_TAB, openActivityMonitor } from "./cpu-key.js";
 
 const LABEL = "MEMORY";
@@ -49,10 +52,14 @@ const swapBannered = new Map<number, boolean>();
 let lastAlertAt: number | undefined;
 
 // Memory key: GB available (or used, or macOS memory pressure + swap) every 2
-// seconds, with a 5-minute graph. Tap opens Activity Monitor's Memory tab.
+// seconds, with a 5-minute graph. Tap opens Activity Monitor's Memory tab;
+// hold (half a second) opens Chrome's Task Manager.
 @action({ UUID: "com.aaronholt.claude-usage.memory" })
 export class MemoryAction extends SingletonAction<MemorySettings> {
   private readonly keys = new Map<string, Key>();
+  private readonly presses = new PressTimer();
+  // One permission banner per plugin run; a failed hold still shows "!" on the key.
+  private permissionBannered = false;
 
   override async onWillAppear(ev: WillAppearEvent<MemorySettings>): Promise<void> {
     if (!ev.action.isKey()) return;
@@ -69,6 +76,7 @@ export class MemoryAction extends SingletonAction<MemorySettings> {
   override onWillDisappear(ev: WillDisappearEvent<MemorySettings>): void {
     this.keys.get(ev.action.id)?.stop();
     this.keys.delete(ev.action.id);
+    this.presses.cancel(ev.action.id);
   }
 
   override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<MemorySettings>): Promise<void> {
@@ -78,8 +86,29 @@ export class MemoryAction extends SingletonAction<MemorySettings> {
     if (key.last) await this.draw(key);
   }
 
-  override onKeyDown(_ev: KeyDownEvent<MemorySettings>): void {
-    openActivityMonitor(ACTIVITY_MONITOR_MEMORY_TAB);
+  override onKeyDown(ev: KeyDownEvent<MemorySettings>): void {
+    const act = ev.action;
+    this.presses.down(act.id, () => void this.openChromeTaskManager(act));
+  }
+
+  override onKeyUp(ev: KeyUpEvent<MemorySettings>): void {
+    if (this.presses.up(ev.action.id) === "tap") openActivityMonitor(ACTIVITY_MONITOR_MEMORY_TAB);
+  }
+
+  private async openChromeTaskManager(act: { showAlert(): Promise<void> }): Promise<void> {
+    const r = await openChromeTaskManager();
+    if (r.ok) return;
+    streamDeck.logger.warn(`chrome task manager: ${r.reason}`);
+    await act.showAlert().catch(() => {});
+    if (!r.needsPermission || this.permissionBannered) return;
+    this.permissionBannered = true;
+    await notify({
+      title: "Allow Stream Deck to open Chrome's Task Manager",
+      message: "Holding the Memory key clicks Chrome's Window → Task Manager, which needs Stream Deck turned on under Privacy & Security → Accessibility.",
+      group: "claude-usage-chrome-task-manager",
+      onClick: `/usr/bin/open "${ACCESSIBILITY_PANE}"`,
+      clickHint: "Click to open that setting.",
+    });
   }
 
   private async draw(key: Key): Promise<void> {
