@@ -9,7 +9,7 @@ export type MemorySettings = {
   // "free" (GB available, default), "used-pct", "used-gb" or "pressure"
   // (macOS memory pressure % with swap used underneath).
   show?: string;
-  // Red below this many GB available (default 7).
+  // Red below this many GB available (default 5).
   warn?: string;
   // Swap counts as high from this many GB (default 10): red swap line on the
   // pressure view, amber "SWAP" tag on the other views.
@@ -19,7 +19,9 @@ export type MemorySettings = {
   banner?: string;
 };
 
-export const DEFAULT_WARN_GIB = 7;
+// 5, not 7: at 7 GB, 96% of ~2,600 logged low-memory banners (11-02 → 11-06)
+// fired at 6–7 GB free, i.e. normal use on this Mac; real trouble was < 3 GB.
+export const DEFAULT_WARN_GIB = 5;
 // Yellow from warn up to warn + MID_MARGIN_GIB available.
 export const MID_MARGIN_GIB = 3;
 export const DEFAULT_SWAP_GIB = 10;
@@ -37,6 +39,23 @@ export function warnGiB(settings: MemorySettings): number {
 
 export function swapLineGiB(settings: MemorySettings): number {
   return positive(settings.swap, DEFAULT_SWAP_GIB);
+}
+
+// "Swapping now": macOS writing to swap at least this fast (bytes/s, over
+// the last 20s). Starting points from this Mac, which averages ~1 MB/s of
+// swap writes over a month in bursts: 5 MB/s = actively swapping, 50 MB/s =
+// heavy (the Mac is likely to feel slow).
+export const SWAPPING_BPS = 5 * 1024 ** 2;
+export const HEAVY_SWAPPING_BPS = 50 * 1024 ** 2;
+
+export function swappingLevel(bytesPerSec: number | undefined): Level {
+  if (bytesPerSec === undefined) return "ok";
+  return bytesPerSec >= HEAVY_SWAPPING_BPS ? "hot" : bytesPerSec >= SWAPPING_BPS ? "mid" : "ok";
+}
+
+const LEVEL_RANK: Record<Level, number> = { ok: 0, mid: 1, hot: 2 };
+export function worse(a: Level, b: Level): Level {
+  return LEVEL_RANK[a] >= LEVEL_RANK[b] ? a : b;
 }
 
 export function isPressureView(settings: MemorySettings): boolean {
@@ -66,8 +85,12 @@ export function swapLevel(swapBytes: number | undefined, line: number): Level {
   return g >= line ? "hot" : g >= line - SWAP_MID_MARGIN_GIB ? "mid" : "ok";
 }
 
-/** Amber corner tag on the free-memory views once swap reaches the swap line. */
+/**
+ * Amber corner tag on the free-memory views: "SWAPPING" while macOS is
+ * writing to swap heavily, else "SWAP 11GB" once swap reaches the swap line.
+ */
 export function swapTag(snap: MemorySnapshot, line: number): string | undefined {
+  if (swappingLevel(snap.swapOutBytesPerSec) === "hot") return "SWAPPING";
   if (swapLevel(snap.swapUsedBytes, line) !== "hot") return undefined;
   return `SWAP ${formatGiB(snap.swapUsedBytes!)}`;
 }
@@ -112,12 +135,16 @@ export function renderMemoryKey(snap: MemorySnapshot, settings: MemorySettings):
 }
 
 function renderPressureKey(snap: MemorySnapshot, settings: MemorySettings): string {
-  const swap = swapLevel(snap.swapUsedBytes, swapLineGiB(settings));
+  const swapping = swappingLevel(snap.swapOutBytesPerSec);
+  const swap = worse(swapLevel(snap.swapUsedBytes, swapLineGiB(settings)), swapping);
+  // "↑" while macOS is writing to swap right now (5 MB/s or more).
+  const arrow = swapping === "ok" ? "" : " ↑";
   return renderKey({
     big: snap.pressurePercent === undefined ? "—" : formatPercent(snap.pressurePercent),
     label: "PRESSURE",
-    subtitle: snap.swapUsedBytes === undefined ? "no swap info" : `swap ${formatGiB(snap.swapUsedBytes)}`,
-    // White while swap is fine; yellow / red as it nears and passes the line.
+    subtitle: snap.swapUsedBytes === undefined ? "no swap info" : `swap ${formatGiB(snap.swapUsedBytes)}${arrow}`,
+    // White while swap is fine; yellow / red as it nears and passes the line,
+    // or while swapping (yellow) / swapping heavily (red).
     subtitleColor: swap === "ok" ? undefined : LEVEL_COLORS[swap],
     level: pressureLevel(snap.pressure),
     spark: snap.pressureHistory,
@@ -138,12 +165,20 @@ export function lowMemoryMessage(
   return withTop(msg, top);
 }
 
-/** Swap banner title: says which of the two tripped it. */
+/** Heavy swapping counts as a swap alert, like high swap and critical pressure. */
+export function heavySwapping(snap: MemorySnapshot): boolean {
+  return swappingLevel(snap.swapOutBytesPerSec) === "hot";
+}
+
+/** Swap banner title: says what tripped it. */
 export function swapAlertTitle(snap: MemorySnapshot, line: number): string {
   const high = snap.swapUsedBytes !== undefined && toGiB(snap.swapUsedBytes) >= line;
   if (snap.pressure === "critical") return high ? "Memory pressure critical, swap high" : "Memory pressure critical";
-  return "Swap is high";
+  if (high) return "Swap is high";
+  return heavySwapping(snap) ? "Mac is swapping heavily" : "Swap is high";
 }
+
+const mbps = (bps: number) => `${Math.round(bps / 1024 ** 2)} MB/s`;
 
 /** e.g. "Swap 11 GB (your line: 10 GB) · pressure 62% · 4.1 GB free of 36 GB. Biggest: …" */
 export function swapAlertMessage(
@@ -153,6 +188,7 @@ export function swapAlertMessage(
 ): string {
   const parts: string[] = [];
   if (snap.swapUsedBytes !== undefined) parts.push(`Swap ${gb(snap.swapUsedBytes)} (your line: ${line} GB)`);
+  if (heavySwapping(snap)) parts.push(`writing ${mbps(snap.swapOutBytesPerSec!)} to swap`);
   if (snap.pressurePercent !== undefined) {
     parts.push(`pressure ${formatPercent(snap.pressurePercent)}${snap.pressure === "critical" ? " (critical)" : ""}`);
   }

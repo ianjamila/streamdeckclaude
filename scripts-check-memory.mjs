@@ -43,6 +43,12 @@ expect("used bytes", used.used, (1200860 + 293095 + 334489) * 16384);
 expect("compressed", used.compressed, 334489 * 16384);
 expect("used ~27.9GB", m.formatGiB(used.used), "28GB");
 expect("not vm_stat", m.parseVmStat("garbage"), undefined);
+expect("swapouts bytes", m.swapOutBytesFromVmStat(m.parseVmStat(VM + "Swapouts:                             157741526.\n")), 157741526 * 16384);
+expect("swapouts missing", m.swapOutBytesFromVmStat(vm), undefined);
+expect("rate none", m.rateFromSamples([[0, 5]]), undefined);
+expect("rate 1MB/s", m.rateFromSamples([[0, 0], [1000, 1], [20000, 20 * 1024 ** 2]]), 1024 ** 2);
+expect("rate reset", m.rateFromSamples([[0, 500], [2000, 100]]), 0);
+expect("rate same time", m.rateFromSamples([[5, 0], [5, 9]]), undefined);
 expect("missing field", m.usedFromVmStat({ pageSize: 4096, pages: { "Pages free": 1 } }), undefined);
 
 expect("swap M", m.parseSwapUsage("total = 6144.00M  used = 4715.62M  free = 1428.38M  (encrypted)"), 4715.62 * 1024 ** 2);
@@ -136,10 +142,22 @@ expect("swap line set", k.swapLineGiB({ swap: "6" }), 6);
 expect("swap tag off", k.swapTag(snap(8, { swapUsedBytes: 9.9 * G }), 10), undefined);
 expect("swap tag on", k.swapTag(snap(8, { swapUsedBytes: 11 * G }), 10), "SWAP 11GB");
 expect("swap tag none", k.swapTag(snap(8), 10), undefined);
+const MB = 1024 ** 2;
+expect("swapping none", k.swappingLevel(undefined), "ok");
+expect("swapping low", k.swappingLevel(4.9 * MB), "ok");
+expect("swapping mid", k.swappingLevel(5 * MB), "mid");
+expect("swapping hot", k.swappingLevel(50 * MB), "hot");
+expect("worse", [k.worse("ok", "mid"), k.worse("hot", "mid"), k.worse("ok", "ok")], ["mid", "hot", "ok"]);
+expect("tag swapping beats size", k.swapTag(snap(8, { swapUsedBytes: 11 * G, swapOutBytesPerSec: 60 * MB }), 10), "SWAPPING");
+expect("tag mid swapping no tag", k.swapTag(snap(8, { swapUsedBytes: 2 * G, swapOutBytesPerSec: 10 * MB }), 10), undefined);
+expect("heavy", [k.heavySwapping(snap(8, { swapOutBytesPerSec: 50 * MB })), k.heavySwapping(snap(8, { swapOutBytesPerSec: 49 * MB })), k.heavySwapping(snap(8))], [true, false, false]);
+expect("title heavy", k.swapAlertTitle(snap(8, { swapUsedBytes: 2 * G, swapOutBytesPerSec: 80 * MB }), 10), "Mac is swapping heavily");
+expect("title high wins", k.swapAlertTitle(snap(8, { swapUsedBytes: 11 * G, swapOutBytesPerSec: 80 * MB }), 10), "Swap is high");
+expect("msg heavy", k.swapAlertMessage(snap(8, { swapUsedBytes: 2 * G, swapOutBytesPerSec: 80 * MB }), 10, []), "Swap 2.0 GB (your line: 10 GB) · writing 80 MB/s to swap · 8.0 GB free of 36 GB.");
 expect("custom line", k.memoryLevel(snap(9), 10), "hot");
 
-expect("warn default", k.warnGiB({}), 7);
-expect("warn junk", k.warnGiB({ warn: "x" }), 7);
+expect("warn default", k.warnGiB({}), 5);
+expect("warn junk", k.warnGiB({ warn: "x" }), 5);
 expect("warn set", k.warnGiB({ warn: "10" }), 10);
 
 expect("banner text", k.lowMemoryMessage(snap(6.8, { swapUsedBytes: 4.6 * G }), 7, [{ name: "Google Chrome", bytes: 6.1 * G }, { name: "node", bytes: 4.3 * G }]),
@@ -155,10 +173,14 @@ expect("swap title both", k.swapAlertTitle(snap(9, { swapUsedBytes: 11 * G, pres
 // The rendered key carries the right number, label and subtitle.
 const svg = (s, set) => Buffer.from(k.renderMemoryKey(s, set).split(",")[1], "base64").toString();
 const has = (name, text, ...parts) => { for (const p of parts) if (!text.includes(p)) { fail++; console.log("FAIL", name, "missing", p); } };
-has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), {}), ">8.1GB<", ">RAM FREE<", ">of 36GB<", "#facc15");
+has("free+swap", svg(snap(8.1, { swapUsedBytes: 4.6 * G }), { warn: "7" }), ">8.1GB<", ">RAM FREE<", ">of 36GB<", "#facc15");
 has("free no swap", svg(snap(12, { swapUsedBytes: 0 }), {}), ">12GB<", ">of 36GB<", "#4ade80");
-has("used pct", svg(snap(6, {}), { show: "used-pct" }), ">83%<", ">RAM USED<", ">6.0GB free<", "#ff6b6b");
+has("used pct", svg(snap(6, {}), { show: "used-pct", warn: "7" }), ">83%<", ">RAM USED<", ">6.0GB free<", "#ff6b6b");
 has("used gb", svg(snap(6, {}), { show: "used-gb" }), ">30GB<", ">of 36GB<");
+// Default line is 5 GB: 6.5 GB free is yellow (5..8), 4.9 GB red, 8 GB green.
+has("default line yellow", svg(snap(6.5), {}), "#facc15");
+has("default line red", svg(snap(4.9), {}), "#ff6b6b");
+has("default line green", svg(snap(8), {}), "#4ade80");
 const lacks = (name, text, ...parts) => { for (const p of parts) if (text.includes(p)) { fail++; console.log("FAIL", name, "unexpected", p); } };
 // Free view: green despite critical pressure; swap tag only past the line.
 {
@@ -190,6 +212,12 @@ const lacks = (name, text, ...parts) => { for (const p of parts) if (text.includ
   has("swap red custom line", p({ pressurePercent: 45, pressure: "normal", swapUsedBytes: 6 * G }, { swap: "6" }), 'fill="#ff6b6b" opacity="1">swap 6.0GB<');
   has("swap white", p({ pressurePercent: 45, pressure: "normal", swapUsedBytes: 2 * G }), 'opacity="0.9">swap 2.0GB<');
   has("pressure unknown", p({}), ">—<", ">no swap info<");
+  // Swapping now: arrow + yellow at 5 MB/s, red at 50 MB/s, even with small swap.
+  const MB = 1024 ** 2;
+  has("swapping arrow", p({ pressurePercent: 45, pressure: "normal", swapUsedBytes: 2 * G, swapOutBytesPerSec: 6 * MB }), 'fill="#facc15" opacity="1">swap 2.0GB ↑<');
+  has("swapping heavy", p({ pressurePercent: 45, pressure: "normal", swapUsedBytes: 2 * G, swapOutBytesPerSec: 60 * MB }), 'fill="#ff6b6b" opacity="1">swap 2.0GB ↑<');
+  has("idle no arrow", p({ pressurePercent: 45, pressure: "normal", swapUsedBytes: 2 * G, swapOutBytesPerSec: 0 }), 'opacity="0.9">swap 2.0GB<');
+  has("free view swapping tag", svg(snap(20, { swapOutBytesPerSec: 60 * MB }), {}), ">SWAPPING<");
 }
 
 if (fail) { console.log(`${fail} check(s) failed`); process.exit(1); }

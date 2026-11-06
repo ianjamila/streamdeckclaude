@@ -44,7 +44,8 @@ export function openActivityMonitor(tab?: number): void {
   });
 }
 
-// Activity Monitor's SelectedTab value for the Memory tab.
+// Activity Monitor's SelectedTab values for its CPU and Memory tabs.
+export const ACTIVITY_MONITOR_CPU_TAB = 0;
 export const ACTIVITY_MONITOR_MEMORY_TAB = 1;
 
 // Shared base for the CPU keys: each visible key subscribes to the shared
@@ -80,7 +81,7 @@ export abstract class CpuKeyAction<S extends JsonObject> extends SingletonAction
   }
 
   override onKeyDown(_ev: KeyDownEvent<S>): void {
-    openActivityMonitor();
+    openActivityMonitor(ACTIVITY_MONITOR_CPU_TAB);
   }
 
   private async draw(action: KeyAction<S>, snap: SystemSnapshot, settings: S): Promise<void> {
