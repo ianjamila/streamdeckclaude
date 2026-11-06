@@ -30,6 +30,9 @@
         border-radius: 3px;
         font: inherit;
       }
+      [hidden] {
+        display: none !important;
+      }
       .hint {
         margin: 4px 0 0 102px;
         color: #9a9a9a;
@@ -38,7 +41,9 @@
     </style>
   </head>
   <body>
-    <!-- Values read by renderMemoryKey / MemoryAction (src/memory-key.ts, src/actions/memory.ts). -->
+    <!-- Values read by renderMemoryKey / MemoryAction (src/memory-key.ts, src/actions/memory.ts).
+         Rows and hints carry data-view="gb" (GB free / % used / GB used) or "pressure";
+         rows without it show on every view. -->
     <div class="item">
       <label for="show">Show</label>
       <select id="show">
@@ -48,7 +53,7 @@
         <option value="pressure">Memory pressure + swap</option>
       </select>
     </div>
-    <div class="item">
+    <div class="item" data-view="gb">
       <label for="warn">Low below</label>
       <select id="warn">
         <option value="4">4 GB free</option>
@@ -62,7 +67,7 @@
       </select>
     </div>
     <div class="item">
-      <label for="swap">Swap high at</label>
+      <label for="swap" id="swap-label">Swap high at</label>
       <select id="swap">
         <option value="4">4 GB</option>
         <option value="6">6 GB</option>
@@ -76,15 +81,28 @@
     <div class="item">
       <label for="banner">Banner</label>
       <select id="banner">
-        <option value="on">When this key's warning trips</option>
+        <option value="on" id="banner-on">When this key's warning trips</option>
         <option value="off">Never</option>
       </select>
     </div>
-    <p class="hint">GB free / used: red below the low line, yellow within 3 GB of it, green above. “Free” counts what Activity Monitor counts: total minus App, Wired and Compressed memory. Once swap reaches the swap line, an amber “SWAP” tag appears top-left.</p>
-    <p class="hint">Memory pressure: macOS's own pressure figure (100 minus the “memory free percentage” that <code>memory_pressure</code> reports), coloured the way Activity Monitor colours its graph. It won't match % used. Swap underneath turns yellow 3 GB before the swap line and red at it.</p>
-    <p class="hint">Banners: the GB views warn when free memory drops below the low line, the pressure view when swap reaches its line or pressure goes critical. Both share a 10-minute quiet period, so one bad moment gives one banner. Tap or click opens Activity Monitor.</p>
+    <p class="hint" data-view="gb">Red below the low line, yellow within 3 GB of it, green above. “Free” counts what Activity Monitor counts: total minus App, Wired and Compressed memory. An amber “SWAP” tag appears top-left once swap reaches the swap tag line.</p>
+    <p class="hint" data-view="pressure">macOS's own pressure figure (100 minus the “memory free percentage” that <code>memory_pressure</code> reports), coloured the way Activity Monitor colours its graph, so it won't match % used. Swap underneath turns yellow 3 GB before the swap line and red at it.</p>
+    <p class="hint">Low-memory and swap banners share a 10-minute quiet period, so one bad moment gives one banner. Tap or click opens Activity Monitor.</p>
 
     <script>
+      // Text that changes with the view: the swap row's label and the banner choice.
+      const VIEW_TEXT = {
+        gb: { swap: "Swap tag at", banner: "When free memory drops below the low line" },
+        pressure: { swap: "Swap high at", banner: "When swap is high or pressure is critical" },
+      };
+
+      function showView(show) {
+        const view = show === "pressure" ? "pressure" : "gb";
+        for (const el of document.querySelectorAll("[data-view]")) el.hidden = el.dataset.view !== view;
+        document.getElementById("swap-label").textContent = VIEW_TEXT[view].swap;
+        document.getElementById("banner-on").textContent = VIEW_TEXT[view].banner;
+      }
+
       // Stream Deck calls this global when the Property Inspector opens.
       function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
         const settings = (JSON.parse(actionInfo).payload || {}).settings || {};
@@ -97,9 +115,11 @@
           select.value = settings[id] || fallback;
           select.addEventListener("change", () => {
             settings[id] = select.value;
+            if (id === "show") showView(select.value);
             ws.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
           });
         }
+        showView(document.getElementById("show").value);
       }
     </script>
   </body>
