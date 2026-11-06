@@ -220,5 +220,45 @@ const lacks = (name, text, ...parts) => { for (const p of parts) if (text.includ
   has("free view swapping tag", svg(snap(20, { swapOutBytesPerSec: 60 * MB }), {}), ">SWAPPING<");
 }
 
+// Tap vs hold (src/long-press.ts), with a 40 ms hold so it runs fast.
+{
+  const lp = await import("./src/long-press.ts");
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const t = new lp.PressTimer(40);
+  let holds = 0;
+  t.down("a", () => holds++);
+  await wait(10);
+  expect("quick release = tap", [t.up("a"), holds], ["tap", 0]);
+  await wait(60);
+  expect("tap never fires hold later", holds, 0);
+  t.down("a", () => holds++);
+  await wait(70);
+  expect("hold fires while held", holds, 1);
+  expect("release after hold", t.up("a"), "hold");
+  expect("up without down", t.up("a"), "none");
+  t.down("b", () => holds++);
+  t.cancel("b");
+  await wait(70);
+  expect("cancelled press never fires", [holds, t.up("b")], [1, "none"]);
+  t.down("c", () => holds++); t.down("d", () => holds++);
+  await wait(10);
+  expect("keys independent", [t.up("c"), holds], ["tap", 1]);
+  await wait(60);
+  expect("other key still holds", [holds, t.up("d")], [2, "hold"]);
+  // A second down on the same key (missed key-up) restarts the press: one hold, not two.
+  let twice = 0;
+  t.down("e", () => twice++); await wait(20); t.down("e", () => twice++);
+  await wait(70);
+  expect("re-press fires once", [twice, t.up("e")], [1, "hold"]);
+  expect("default hold", lp.HOLD_MS, 500);
+}
+{
+  const c = await import("./src/chrome-task-manager.ts");
+  expect("perm assistive", c.isPermissionError("execution error: osascript is not allowed assistive access. (-25211)"), true);
+  expect("perm automation", c.isPermissionError("Not authorized to send Apple events to System Events. (-1743)"), true);
+  expect("perm other", c.isPermissionError("Chrome's Window menu has no Task Manager item"), false);
+  has("script clicks the menu item", c.CHROME_TASK_MANAGER_SCRIPT, 'menu item "Task Manager" of menu "Window" of menu bar 1', 'activate');
+}
+
 if (fail) { console.log(`${fail} check(s) failed`); process.exit(1); }
 console.log("memory checks: all passed");
