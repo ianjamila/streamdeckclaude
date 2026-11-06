@@ -19,13 +19,33 @@ type Key<S extends JsonObject> = {
 };
 
 /** Activity Monitor on macOS, Task Manager on Windows. Shared with the Memory key. */
-export function openActivityMonitor(): void {
+export function openActivityMonitor(tab?: number): void {
   const [cmd, args] =
     process.platform === "win32" ? ["taskmgr", []] : ["open", ["-a", "Activity Monitor"]];
-  execFile(cmd, args, (e) => {
-    if (e) streamDeck.logger.error(`open activity monitor failed: ${e.message}`);
+  const launch = (): void => {
+    execFile(cmd, args, (e) => {
+      if (e) streamDeck.logger.error(`open activity monitor failed: ${e.message}`);
+    });
+  };
+  if (tab === undefined || process.platform !== "darwin") return launch();
+  // Activity Monitor opens on the tab saved in its SelectedTab preference. It
+  // only reads that at launch (and rewrites it on quit), so set it only while
+  // the app is closed; if it's already open, just bring it forward.
+  execFile("/usr/bin/pgrep", ["-x", "Activity Monitor"], (running) => {
+    if (!running) return launch(); // exit 0 = already open
+    execFile(
+      "/usr/bin/defaults",
+      ["write", "com.apple.ActivityMonitor", "SelectedTab", "-int", String(tab)],
+      (e) => {
+        if (e) streamDeck.logger.warn(`activity monitor tab not set: ${e.message}`);
+        launch();
+      }
+    );
   });
 }
+
+// Activity Monitor's SelectedTab value for the Memory tab.
+export const ACTIVITY_MONITOR_MEMORY_TAB = 1;
 
 // Shared base for the CPU keys: each visible key subscribes to the shared
 // sampler and redraws on every snapshot. Tap opens Activity Monitor.

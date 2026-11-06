@@ -45,6 +45,7 @@
         <option value="free">GB free</option>
         <option value="used-pct">% used</option>
         <option value="used-gb">GB used</option>
+        <option value="pressure">Memory pressure + swap</option>
       </select>
     </div>
     <div class="item">
@@ -61,19 +62,33 @@
       </select>
     </div>
     <div class="item">
+      <label for="swap">Swap high at</label>
+      <select id="swap">
+        <option value="4">4 GB</option>
+        <option value="6">6 GB</option>
+        <option value="8">8 GB</option>
+        <option value="10">10 GB</option>
+        <option value="12">12 GB</option>
+        <option value="16">16 GB</option>
+        <option value="20">20 GB</option>
+      </select>
+    </div>
+    <div class="item">
       <label for="banner">Banner</label>
       <select id="banner">
-        <option value="on">When it drops below the line</option>
+        <option value="on">When this key's warning trips</option>
         <option value="off">Never</option>
       </select>
     </div>
-    <p class="hint">Red below the line, yellow within 3 GB of it, green above (macOS memory pressure can push it to yellow or red sooner). “Free” counts what Activity Monitor counts: total minus App, Wired and Compressed memory. The banner names the biggest apps; click it to open Activity Monitor.</p>
+    <p class="hint">GB free / used: red below the low line, yellow within 3 GB of it, green above. “Free” counts what Activity Monitor counts: total minus App, Wired and Compressed memory. Once swap reaches the swap line, an amber “SWAP” tag appears top-left.</p>
+    <p class="hint">Memory pressure: macOS's own pressure figure (100 minus the “memory free percentage” that <code>memory_pressure</code> reports), coloured the way Activity Monitor colours its graph. It won't match % used. Swap underneath turns yellow 3 GB before the swap line and red at it.</p>
+    <p class="hint">Banners: the GB views warn when free memory drops below the low line, the pressure view when swap reaches its line or pressure goes critical. Both share a 10-minute quiet period, so one bad moment gives one banner. Tap or click opens Activity Monitor.</p>
 
     <script>
       // Stream Deck calls this global when the Property Inspector opens.
       function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
         const settings = (JSON.parse(actionInfo).payload || {}).settings || {};
-        const fields = { show: "free", warn: "7", banner: "on" };
+        const fields = { show: "free", warn: "7", swap: "10", banner: "on" };
 
         const ws = new WebSocket("ws://127.0.0.1:" + port);
         ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));
