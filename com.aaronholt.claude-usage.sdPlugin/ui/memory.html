@@ -106,7 +106,7 @@
       // Stream Deck calls this global when the Property Inspector opens.
       function connectElgatoStreamDeckSocket(port, uuid, registerEvent, _info, actionInfo) {
         const settings = (JSON.parse(actionInfo).payload || {}).settings || {};
-        const fields = { show: "free", warn: "7", swap: "10", banner: "on" };
+        const fields = { show: "free", warn: "5", swap: "10", banner: "on" };
 
         const ws = new WebSocket("ws://127.0.0.1:" + port);
         ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid }));

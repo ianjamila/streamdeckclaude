@@ -18,6 +18,7 @@ import {
   type MemorySnapshot,
 } from "../memory.js";
 import {
+  heavySwapping,
   isPressureView,
   lowMemoryMessage,
   renderMemoryKey,
@@ -108,7 +109,7 @@ export class MemoryAction extends SingletonAction<MemorySettings> {
   private async maybeSwapBanner(snap: MemorySnapshot, line: number): Promise<void> {
     const edge = swapAlertEdge(
       toGiB(snap.swapUsedBytes ?? 0),
-      snap.pressure === "critical",
+      snap.pressure === "critical" || heavySwapping(snap),
       line,
       swapBannered.get(line) ?? false
     );

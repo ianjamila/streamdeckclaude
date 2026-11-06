@@ -35,6 +35,10 @@ export type MemorySnapshot = {
   // Current size of the swap files. macOS grows them as needed, so this is
   // not a fixed limit: compare swap used with a GB line, not with this.
   swapTotalBytes?: number;
+  // How fast macOS is writing memory out to swap right now, in bytes per
+  // second, averaged over the last SWAP_RATE_WINDOW_MS. Undefined until two
+  // samples exist, and where vm_stat isn't available.
+  swapOutBytesPerSec?: number;
   // Memory pressure 0..100 = 100 - kern.memorystatus_level (the "system-wide
   // memory free percentage" that `memory_pressure` prints). Higher = worse.
   pressurePercent?: number;
@@ -61,6 +65,29 @@ export function parseVmStat(text: string): VmStat | undefined {
     if (m) pages[m[1]!] = Number(m[2]);
   }
   return { pageSize: Number(size[1]), pages };
+}
+
+/** vm_stat "Swapouts" (pages written to swap since boot) in bytes. */
+export function swapOutBytesFromVmStat(vm: VmStat): number | undefined {
+  const pages = vm.pages["Swapouts"];
+  return pages === undefined ? undefined : pages * vm.pageSize;
+}
+
+// "Swapping now" averages swap writes over this window, so one 2s burst
+// doesn't flash the key.
+export const SWAP_RATE_WINDOW_MS = 20_000;
+
+/**
+ * Bytes per second between the oldest and newest [time ms, cumulative bytes]
+ * sample. Undefined with fewer than two samples; 0 if the counter went
+ * backwards (it resets at boot).
+ */
+export function rateFromSamples(samples: [number, number][]): number | undefined {
+  if (samples.length < 2) return undefined;
+  const [t0, b0] = samples[0]!;
+  const [t1, b1] = samples[samples.length - 1]!;
+  if (t1 <= t0) return undefined;
+  return Math.max(0, ((b1 - b0) * 1000) / (t1 - t0));
 }
 
 /** Activity Monitor's Memory Used: App Memory + Wired + Compressed, in bytes. */
@@ -108,7 +135,10 @@ export function parsePressure(text: string): Pressure | undefined {
   return undefined;
 }
 
-type Reading = Omit<MemorySnapshot, "usedHistory" | "pressureHistory">;
+type Reading = Omit<MemorySnapshot, "usedHistory" | "pressureHistory" | "swapOutBytesPerSec"> & {
+  // Cumulative bytes written to swap since boot (vm_stat Swapouts).
+  swapOutBytesTotal?: number;
+};
 
 async function readMac(): Promise<Reading> {
   const total = os.totalmem();
@@ -133,6 +163,7 @@ async function readMac(): Promise<Reading> {
     usedBytes,
     availableBytes: total - usedBytes,
     compressedBytes: used.compressed,
+    swapOutBytesTotal: swapOutBytesFromVmStat(parsed),
     swapUsedBytes: parseSwapUsage(swap),
     swapTotalBytes: parseSwapTotal(swap),
     pressure: parsePressure(pressure),
@@ -165,6 +196,7 @@ let busy = false;
 let samples = 0;
 const usedHistory: number[] = [];
 const pressureHistory: number[] = [];
+const swapOutSamples: [number, number][] = [];
 let last: MemorySnapshot | undefined;
 
 /**
@@ -190,7 +222,15 @@ async function tick(): Promise<void> {
     const newPoint = samples++ % HISTORY_EVERY === 0;
     pushPeak(usedHistory, usedFraction, newPoint);
     if (r.pressurePercent !== undefined) pushPeak(pressureHistory, r.pressurePercent / 100, newPoint);
-    last = { ...r, usedHistory: [...usedHistory], pressureHistory: [...pressureHistory] };
+    let swapOutBytesPerSec: number | undefined;
+    if (r.swapOutBytesTotal !== undefined) {
+      const now = Date.now();
+      swapOutSamples.push([now, r.swapOutBytesTotal]);
+      while (swapOutSamples.length > 2 && now - swapOutSamples[0]![0] > SWAP_RATE_WINDOW_MS) swapOutSamples.shift();
+      swapOutBytesPerSec = rateFromSamples(swapOutSamples);
+    }
+    const { swapOutBytesTotal: _total, ...reading } = r;
+    last = { ...reading, swapOutBytesPerSec, usedHistory: [...usedHistory], pressureHistory: [...pressureHistory] };
     for (const fn of listeners) fn(last);
   } finally {
     busy = false;
@@ -215,6 +255,7 @@ export function subscribeMemory(fn: Listener): () => void {
     last = undefined;
     usedHistory.length = 0;
     pressureHistory.length = 0;
+    swapOutSamples.length = 0;
   };
 }
 
@@ -250,8 +291,8 @@ export function lowMemoryEdge(
 
 /**
  * Swap / pressure alert, one per episode: fires when swap reaches `lineGiB`
- * or macOS pressure goes critical; re-arms once swap is REARM_GIB below the
- * line and pressure is no longer critical.
+ * or `critical` is set (macOS pressure critical, or heavy swapping); re-arms
+ * once swap is REARM_GIB below the line and `critical` has cleared.
  */
 export function swapAlertEdge(
   swapGiB: number,
