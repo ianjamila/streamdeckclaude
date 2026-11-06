@@ -32,10 +32,18 @@ export type MemorySnapshot = {
   usedBytes: number;
   // Undefined where the OS doesn't report it (Windows / Linux).
   swapUsedBytes?: number;
+  // Current size of the swap files. macOS grows them as needed, so this is
+  // not a fixed limit: compare swap used with a GB line, not with this.
+  swapTotalBytes?: number;
+  // Memory pressure 0..100 = 100 - kern.memorystatus_level (the "system-wide
+  // memory free percentage" that `memory_pressure` prints). Higher = worse.
+  pressurePercent?: number;
   compressedBytes?: number;
   pressure?: Pressure;
-  // Used fraction 0..1, oldest first, one point per 10s.
+  // Used fraction 0..1, oldest first, one point per 10s (peak of each 10s).
   usedHistory: number[];
+  // Pressure fraction 0..1, same timing; empty where pressure is unknown.
+  pressureHistory: number[];
 };
 
 export type VmStat = {
@@ -66,12 +74,30 @@ export function usedFromVmStat(vm: VmStat): { used: number; compressed: number }
   return { used: (app + wired + compressor) * vm.pageSize, compressed: compressor * vm.pageSize };
 }
 
-/** "total = 6144.00M  used = 4715.62M  free = 1428.38M  (encrypted)" → used bytes. */
-export function parseSwapUsage(text: string): number | undefined {
-  const m = /used = ([\d.]+)([KMGT])/.exec(text);
+function swapField(text: string, field: "used" | "total"): number | undefined {
+  const m = new RegExp(`${field} = ([\\d.]+)([KMGT])`).exec(text);
   if (!m) return undefined;
   const unit = { K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[m[2] as "K" | "M" | "G" | "T"];
   return Number(m[1]) * unit;
+}
+
+/** "total = 6144.00M  used = 4715.62M  free = 1428.38M  (encrypted)" → used bytes. */
+export function parseSwapUsage(text: string): number | undefined {
+  return swapField(text, "used");
+}
+
+/** Same vm.swapusage line → current swap file size in bytes. */
+export function parseSwapTotal(text: string): number | undefined {
+  return swapField(text, "total");
+}
+
+/** kern.memorystatus_level ("55" = 55% free) → pressure 0..100 (45). */
+export function parsePressurePercent(text: string): number | undefined {
+  const t = text.trim();
+  if (!/^\d+$/.test(t)) return undefined;
+  const free = Number(t);
+  if (free > 100) return undefined;
+  return 100 - free;
 }
 
 export function parsePressure(text: string): Pressure | undefined {
@@ -82,16 +108,19 @@ export function parsePressure(text: string): Pressure | undefined {
   return undefined;
 }
 
-type Reading = Omit<MemorySnapshot, "usedHistory">;
+type Reading = Omit<MemorySnapshot, "usedHistory" | "pressureHistory">;
 
 async function readMac(): Promise<Reading> {
   const total = os.totalmem();
-  const [vm, swap, pressure] = await Promise.all([
+  const [vm, swap, pressure, level] = await Promise.all([
     execFileAsync("/usr/bin/vm_stat", [], { timeout: 5_000 }).then((r) => r.stdout),
     execFileAsync("/usr/sbin/sysctl", ["-n", "vm.swapusage"], { timeout: 5_000 })
       .then((r) => r.stdout)
       .catch(() => ""),
     execFileAsync("/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"], { timeout: 5_000 })
+      .then((r) => r.stdout)
+      .catch(() => ""),
+    execFileAsync("/usr/sbin/sysctl", ["-n", "kern.memorystatus_level"], { timeout: 5_000 })
       .then((r) => r.stdout)
       .catch(() => ""),
   ]);
@@ -105,7 +134,9 @@ async function readMac(): Promise<Reading> {
     availableBytes: total - usedBytes,
     compressedBytes: used.compressed,
     swapUsedBytes: parseSwapUsage(swap),
+    swapTotalBytes: parseSwapTotal(swap),
     pressure: parsePressure(pressure),
+    pressurePercent: parsePressurePercent(level),
   };
 }
 
@@ -133,7 +164,21 @@ let timer: NodeJS.Timeout | undefined;
 let busy = false;
 let samples = 0;
 const usedHistory: number[] = [];
+const pressureHistory: number[] = [];
 let last: MemorySnapshot | undefined;
+
+/**
+ * Adds one sample to a history: a new point every HISTORY_EVERY samples,
+ * otherwise the newest point keeps the peak of its 10s window.
+ */
+export function pushPeak(history: number[], value: number, newPoint: boolean, max = HISTORY): void {
+  if (newPoint || !history.length) {
+    history.push(value);
+    if (history.length > max) history.shift();
+  } else {
+    history[history.length - 1] = Math.max(history[history.length - 1]!, value);
+  }
+}
 
 async function tick(): Promise<void> {
   if (busy) return; // a slow vm_stat never stacks up readings
@@ -142,14 +187,10 @@ async function tick(): Promise<void> {
     const r = await read();
     if (!timer) return; // unsubscribed while reading
     const usedFraction = r.totalBytes ? r.usedBytes / r.totalBytes : 0;
-    if (samples++ % HISTORY_EVERY === 0) {
-      usedHistory.push(usedFraction);
-      if (usedHistory.length > HISTORY) usedHistory.shift();
-    } else if (usedHistory.length) {
-      // Between history steps the newest point holds the peak of its 10s window.
-      usedHistory[usedHistory.length - 1] = Math.max(usedHistory[usedHistory.length - 1]!, usedFraction);
-    }
-    last = { ...r, usedHistory: [...usedHistory] };
+    const newPoint = samples++ % HISTORY_EVERY === 0;
+    pushPeak(usedHistory, usedFraction, newPoint);
+    if (r.pressurePercent !== undefined) pushPeak(pressureHistory, r.pressurePercent / 100, newPoint);
+    last = { ...r, usedHistory: [...usedHistory], pressureHistory: [...pressureHistory] };
     for (const fn of listeners) fn(last);
   } finally {
     busy = false;
@@ -173,6 +214,7 @@ export function subscribeMemory(fn: Listener): () => void {
     samples = 0;
     last = undefined;
     usedHistory.length = 0;
+    pressureHistory.length = 0;
   };
 }
 
@@ -204,6 +246,32 @@ export function lowMemoryEdge(
   if (availableGiB < warnGiB) return { fire: !alreadyBannered, bannered: true };
   if (availableGiB >= warnGiB + REARM_GIB) return { fire: false, bannered: false };
   return { fire: false, bannered: alreadyBannered };
+}
+
+/**
+ * Swap / pressure alert, one per episode: fires when swap reaches `lineGiB`
+ * or macOS pressure goes critical; re-arms once swap is REARM_GIB below the
+ * line and pressure is no longer critical.
+ */
+export function swapAlertEdge(
+  swapGiB: number,
+  critical: boolean,
+  lineGiB: number,
+  alreadyBannered: boolean
+): { fire: boolean; bannered: boolean } {
+  if (swapGiB >= lineGiB || critical) return { fire: !alreadyBannered, bannered: true };
+  if (swapGiB < lineGiB - REARM_GIB) return { fire: false, bannered: false };
+  return { fire: false, bannered: alreadyBannered };
+}
+
+/**
+ * Low-memory and swap alerts share one cooldown, so a bad moment that trips
+ * both (low free memory usually comes with heavy swap) gives one banner.
+ */
+export const ALERT_COOLDOWN_MS = 10 * 60_000;
+
+export function alertAllowed(lastAlertAt: number | undefined, now: number): boolean {
+  return lastAlertAt === undefined || now - lastAlertAt >= ALERT_COOLDOWN_MS;
 }
 
 /**

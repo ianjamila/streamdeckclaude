@@ -124,6 +124,11 @@ function staleSvg(stale: string | undefined, font: string, hasBadge: boolean): s
     font-weight="700" letter-spacing="1" fill="${STALE_COLOR}">${escapeXml(stale)}</text>`;
 }
 
+// Amber warning tag top-left (e.g. "SWAP 11GB"), same spot and colour as the
+// stale tag but it leaves the number at full strength. Keys that use it carry
+// no badge and no stale tag.
+const TAG_COLOR = STALE_COLOR;
+
 function fontSize(text: string): number {
   if (text.length <= 3) return 36;
   if (text.length <= 4) return 32;
@@ -143,6 +148,10 @@ export function renderKey(opts: {
   level?: Level;
   // Out-of-date tag (e.g. "2D OLD"): drawn top-left and dims the number.
   stale?: string;
+  // Warning tag (e.g. "SWAP 11GB"): drawn top-left in amber, number not dimmed.
+  tag?: string;
+  // Colour for the subtitle line instead of the theme foreground.
+  subtitleColor?: string;
 }): string {
   const t = opts.theme ?? CLAUDE_THEME;
   const levelColor = opts.level ? LEVEL_COLORS[opts.level] : undefined;
@@ -151,7 +160,11 @@ export function renderKey(opts: {
   const subSize = opts.subtitle && opts.subtitle.length > 11 ? 15 : 17;
   const sub = opts.subtitle
     ? `<text x="72" y="102" text-anchor="middle" font-family="${t.font}"
-         font-weight="500" font-size="${subSize}" fill="${t.fg}" opacity="0.9">${escapeXml(opts.subtitle)}</text>`
+         font-weight="500" font-size="${subSize}" fill="${opts.subtitleColor ?? t.fg}" opacity="${opts.subtitleColor ? 1 : 0.9}">${escapeXml(opts.subtitle)}</text>`
+    : "";
+  const tag = opts.tag
+    ? `<text x="12" y="25" font-size="13" font-family="${t.font}"
+         font-weight="700" letter-spacing="1" fill="${TAG_COLOR}">${escapeXml(opts.tag)}</text>`
     : "";
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144">
     <rect width="144" height="144" fill="${t.bg}"/>
@@ -159,6 +172,7 @@ export function renderKey(opts: {
     ${t.glyph(118, 10, 18, t.accent)}
     ${badgeSvg(opts.badge, t.fg, t.font)}
     ${staleSvg(opts.stale, t.font, !!opts.badge)}
+    ${tag}
     <text x="72" y="66" text-anchor="middle" font-family="${t.font}"
           font-weight="700" font-size="${size}" fill="${numColor}"${opts.stale ? ` opacity="0.55"` : ""}>${escapeXml(opts.big)}</text>
     ${sub}

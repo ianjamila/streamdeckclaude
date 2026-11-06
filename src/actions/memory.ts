@@ -8,10 +8,27 @@ import streamDeck, {
   type WillDisappearEvent,
 } from "@elgato/streamdeck";
 import { MEMORY_THEME, renderLoading } from "../render.js";
-import { lowMemoryEdge, readTopMemoryApps, subscribeMemory, toGiB, type MemorySnapshot } from "../memory.js";
-import { lowMemoryMessage, renderMemoryKey, warnGiB, type MemorySettings } from "../memory-key.js";
+import {
+  alertAllowed,
+  lowMemoryEdge,
+  readTopMemoryApps,
+  subscribeMemory,
+  swapAlertEdge,
+  toGiB,
+  type MemorySnapshot,
+} from "../memory.js";
+import {
+  isPressureView,
+  lowMemoryMessage,
+  renderMemoryKey,
+  swapAlertMessage,
+  swapAlertTitle,
+  swapLineGiB,
+  warnGiB,
+  type MemorySettings,
+} from "../memory-key.js";
 import { notify } from "../notify.js";
-import { openActivityMonitor } from "./cpu-key.js";
+import { ACTIVITY_MONITOR_MEMORY_TAB, openActivityMonitor } from "./cpu-key.js";
 
 const LABEL = "MEMORY";
 
@@ -23,11 +40,15 @@ type Key = {
 };
 
 // Banner state per warning line, so two Memory keys with the same line share
-// one banner per low-memory episode.
+// one banner per episode. Low free memory (free views) and high swap /
+// critical pressure (pressure view) are tracked separately…
 const bannered = new Map<number, boolean>();
+const swapBannered = new Map<number, boolean>();
+// …but share one cooldown, so a bad moment that trips both gives one banner.
+let lastAlertAt: number | undefined;
 
-// Memory key: GB available (or used) every 2 seconds, with a 5-minute graph.
-// Tap opens Activity Monitor.
+// Memory key: GB available (or used, or macOS memory pressure + swap) every 2
+// seconds, with a 5-minute graph. Tap opens Activity Monitor's Memory tab.
 @action({ UUID: "com.aaronholt.claude-usage.memory" })
 export class MemoryAction extends SingletonAction<MemorySettings> {
   private readonly keys = new Map<string, Key>();
@@ -57,7 +78,7 @@ export class MemoryAction extends SingletonAction<MemorySettings> {
   }
 
   override onKeyDown(_ev: KeyDownEvent<MemorySettings>): void {
-    openActivityMonitor();
+    openActivityMonitor(ACTIVITY_MONITOR_MEMORY_TAB);
   }
 
   private async draw(key: Key): Promise<void> {
@@ -68,13 +89,47 @@ export class MemoryAction extends SingletonAction<MemorySettings> {
     } catch (e) {
       streamDeck.logger.error(`${LABEL}: ${(e as Error).message}`);
     }
-    if (key.settings.banner !== "off") void this.maybeBanner(snap, warnGiB(key.settings));
+    if (key.settings.banner === "off") return;
+    if (isPressureView(key.settings)) void this.maybeSwapBanner(snap, swapLineGiB(key.settings));
+    else void this.maybeBanner(snap, warnGiB(key.settings));
+  }
+
+  /** Claims the shared cooldown; false (and a log line) if a banner went out recently. */
+  private claimAlert(what: string): boolean {
+    const now = Date.now();
+    if (!alertAllowed(lastAlertAt, now)) {
+      streamDeck.logger.info(`${what}: no banner, another memory banner went out < 10 min ago`);
+      return false;
+    }
+    lastAlertAt = now;
+    return true;
+  }
+
+  private async maybeSwapBanner(snap: MemorySnapshot, line: number): Promise<void> {
+    const edge = swapAlertEdge(
+      toGiB(snap.swapUsedBytes ?? 0),
+      snap.pressure === "critical",
+      line,
+      swapBannered.get(line) ?? false
+    );
+    swapBannered.set(line, edge.bannered);
+    if (!edge.fire || !this.claimAlert("swap high")) return;
+    const top = await readTopMemoryApps();
+    const message = swapAlertMessage(snap, line, top);
+    streamDeck.logger.info(`swap high: ${message}`);
+    await notify({
+      title: swapAlertTitle(snap, line),
+      message,
+      group: "claude-usage-memory-swap",
+      onClick: process.platform === "darwin" ? `/usr/bin/open -a "Activity Monitor"` : undefined,
+      clickHint: "Click to open Activity Monitor.",
+    });
   }
 
   private async maybeBanner(snap: MemorySnapshot, warn: number): Promise<void> {
     const edge = lowMemoryEdge(toGiB(snap.availableBytes), warn, bannered.get(warn) ?? false);
     bannered.set(warn, edge.bannered);
-    if (!edge.fire) return;
+    if (!edge.fire || !this.claimAlert("memory low")) return;
     const top = await readTopMemoryApps();
     const message = lowMemoryMessage(snap, warn, top);
     streamDeck.logger.info(`memory low: ${message}`);
