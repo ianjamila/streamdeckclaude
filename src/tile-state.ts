@@ -8,10 +8,20 @@ import { ageTag } from "./age.js";
 // wakes from sleep, or while the usage service is unreachable).
 export const STALE_AFTER_MS = 15 * 60_000;
 
+// Failure reason when a key's login belongs to another Claude account than
+// the one the key is labelled with; the signed-in email follows it.
+export const WRONG_ACCOUNT_PREFIX = "wrong account: signed in as ";
+
+// The email a wrong-account reason names, or undefined for any other reason.
+export function wrongAccountEmail(reason: string): string | undefined {
+  return reason.startsWith(WRONG_ACCOUNT_PREFIX) ? reason.slice(WRONG_ACCOUNT_PREFIX.length) : undefined;
+}
+
 // Two-word reason shown under the "!" on an error key. Network and server
 // problems are checked first: a refresh that fails that way isn't a sign-in
 // problem.
 export function errorHint(reason: string): string {
+  if (reason.startsWith(WRONG_ACCOUNT_PREFIX)) return "WRONG ACCT";
   if (reason.includes("network") || reason.includes("fetch failed")) return "OFFLINE";
   if (reason.includes("server error")) return "ERROR";
   if (reason.startsWith("token expired") || reason.includes("refresh")) return "SIGN-IN";
@@ -25,7 +35,7 @@ export function errorHint(reason: string): string {
 // last good numbers, marked old.
 export function needsAction(reason: string): boolean {
   const hint = errorHint(reason);
-  return hint === "SIGN-IN" || hint === "NO LOGIN";
+  return hint === "SIGN-IN" || hint === "NO LOGIN" || hint === "WRONG ACCT";
 }
 
 export type TileState<T> =

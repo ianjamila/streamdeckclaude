@@ -37,6 +37,10 @@ expect("hint rate", errorHint("rate_limited"), "RATE LIMIT");
 expect("hint no login", errorHint("cannot read credentials: ENOENT"), "NO LOGIN");
 expect("hint other", errorHint("HTTP 500: {}"), "ERROR");
 expect("action sign-in", needsAction("token expired — x"), true);
+expect("hint wrong account", errorHint("wrong account: signed in as a@b.c"), "WRONG ACCT");
+expect("action wrong account", needsAction("wrong account: signed in as a@b.c"), true);
+expect("wrong account email", (await import("./src/tile-state.ts")).wrongAccountEmail("wrong account: signed in as a@b.c"), "a@b.c");
+expect("no wrong account email for other reasons", (await import("./src/tile-state.ts")).wrongAccountEmail("rate_limited"), undefined);
 expect("action offline", needsAction("network error: x"), false);
 
 const now = Date.parse("2026-10-06T12:00:00Z");
@@ -59,6 +63,9 @@ expect("expired while signing in: SIGNING IN", tileState(expired, { data: old, a
 expect("no login while signing in: SIGNING IN", tileState({ ok: false, reason: "cannot read credentials: x" }, undefined, now, true), { kind: "error", hint: "SIGNING IN" });
 expect("offline while signing in keeps data", tileState(offline, { data: old, at: now - 2 * H }, now, true), { kind: "data", data: old, stale: "2H OLD" });
 expect("ok while signing in shows data", tileState(ok, { data, at: now }, now, true), { kind: "data", data });
+const wrong = { ok: false, reason: "wrong account: signed in as a@b.c" };
+expect("wrong account hides any good data", tileState(wrong, { data: old, at: now - 1 * M }, now), { kind: "error", hint: "WRONG ACCT" });
+expect("wrong account while signing in: SIGNING IN", tileState(wrong, undefined, now, true), { kind: "error", hint: "SIGNING IN" });
 
 console.log(fail ? `${fail} FAILED` : "all stale checks passed");
 process.exit(fail ? 1 : 0);
