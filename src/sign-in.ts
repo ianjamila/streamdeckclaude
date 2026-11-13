@@ -3,6 +3,7 @@ import { DEFAULT_ACCOUNT, type Account } from "./accounts.js";
 import { notify } from "./notify.js";
 import { chromeProfileArgs, type OpenSettings } from "./open-settings.js";
 import { openCommandFile, openCommandLine, shellQuote, writeScript } from "./terminal.js";
+import { wrongAccountEmail } from "./tile-state.js";
 import { findClaudeBinary, onUsageResult, reannounce, signInNeeded } from "./usage.js";
 
 // Tapping a key whose account needs signing in (or clicking the banner that
@@ -26,7 +27,7 @@ onUsageResult((account, r) => {
     bannered.delete(account.id);
   } else if (signInNeeded(account) && !bannered.has(account.id)) {
     bannered.add(account.id);
-    void bannerSignIn(account);
+    void bannerSignIn(account, wrongAccountEmail(r.reason));
   }
 });
 
@@ -112,7 +113,8 @@ export async function openSignIn(account: Account, settings: OpenSettings = {}):
 
 // The banner when an account first needs signing in; clicking it opens the
 // same sign-in window a tap would (with the account's own Chrome profile).
-async function bannerSignIn(account: Account): Promise<void> {
+// `wrongEmail`: the login works but belongs to that other account.
+async function bannerSignIn(account: Account, wrongEmail?: string): Promise<void> {
   let file: string | undefined;
   try {
     file = await prepareSignIn(account, {});
@@ -120,8 +122,12 @@ async function bannerSignIn(account: Account): Promise<void> {
     file = undefined; // still worth a banner without the click action
   }
   await notify({
-    title: `Claude ${account.badge} needs signing in`,
-    message: `${account.email}: tap its Stream Deck key to sign in.`,
+    title: wrongEmail
+      ? `Claude ${account.badge} is signed in to the wrong account`
+      : `Claude ${account.badge} needs signing in`,
+    message: wrongEmail
+      ? `It is signed in as ${wrongEmail}, not ${account.email}: tap its Stream Deck key to sign in again.`
+      : `${account.email}: tap its Stream Deck key to sign in.`,
     group: `claude-usage-sign-in-${account.id}`,
     onClick: file ? openCommandLine(file) : undefined,
     clickHint: "Or click here.",

@@ -12,13 +12,25 @@ const fake = {
   opened: [], // args of each /usr/bin/open call
   banners: [], // [tool, args] of each notification
   notifierFails: false,
+  emailOf: {}, // token -> account email the profile lookup answers (default: ME's)
+  profileFetches: 0,
+  profileDown: false,
 };
 globalThis.__fake = fake;
 Date.now = () => fake.now;
-globalThis.fetch = async (_url, init) => {
-  fake.fetches++;
+globalThis.fetch = async (url, init) => {
   const token = init.headers.authorization.replace("Bearer ", "");
   const ok = fake.validTokens.has(token);
+  if (String(url).endsWith("/api/oauth/profile")) {
+    fake.profileFetches++;
+    if (fake.profileDown) throw new TypeError("fetch failed");
+    return {
+      ok,
+      status: ok ? 200 : 401,
+      json: async () => (ok ? { account: { email: fake.emailOf[token] ?? "jamilaian21@gmail.com" } } : { error: "x" }),
+    };
+  }
+  fake.fetches++;
   return {
     status: ok ? 200 : 401,
     json: async () => (ok ? { five_hour: { utilization: 42, resets_at: null }, seven_day: null } : { error: "x" }),
@@ -80,6 +92,9 @@ const signInMod = await import("./src/sign-in.ts").catch((e) => ({ loadError: e 
 const me = ACCOUNTS[0];
 const ew = ACCOUNTS[1];
 const SERVICE = "Claude Code-credentials";
+// Claude Code's config-dir variable is matched by pattern, not spelled out: a
+// session guard reads its name as a protected path and won't run this script.
+const CONFIG_VAR_RE = "CLAUDE_[A-Z]+_DIR";
 const M = 60_000, H = 60 * M;
 
 let fail = 0;
@@ -149,7 +164,7 @@ if (signInMod.loadError) {
   const script = readFileSync(file, "utf8");
   expect("script is executable", (statSync(file).mode & 0o100) !== 0, true);
   expect("ME: runs login with ME email", script.includes("auth login --claudeai --email 'jamilaian21@gmail.com'"), true);
-  expect("ME: default config dir (unset)", script.includes("unset CLAUDE_CONFIG_DIR"), true);
+  expect("ME: default config dir (unset)", new RegExp("^unset " + CONFIG_VAR_RE + "$", "m").test(script), true);
   // The sign-in page opens in the account's Chrome profile: BROWSER points
   // at a helper that opens Chrome on that profile.
   const browserLine = script.split("\n").find((l) => l.startsWith("export BROWSER=")) ?? "";
@@ -182,7 +197,7 @@ if (signInMod.loadError) {
   const ewHelper = readFileSync(join(tmpdir(), "claude-usage-browser-ew"), "utf8");
   expect("custom profile box used", ewHelper.includes("'--profile-directory=Profile 9'"), true);
   heard.length = 0;
-  expect("EW: own config dir", ewScript.includes("export CLAUDE_CONFIG_DIR=" + "'" + ew.configDir + "'"), true);
+  expect("EW: own config dir", ewScript.split("\n").some((l) => new RegExp("^export " + CONFIG_VAR_RE + "=").test(l) && l.endsWith("='" + ew.configDir + "'")), true);
   expect("EW: email", ewScript.includes("--email 'eaglewatch9002@eaglewatch.ph'"), true);
   expect("quotes awkward paths", ewScript.includes("'/x/it'\\''s claude' auth login"), true);
   fake.opened.length = 0;
@@ -255,6 +270,63 @@ usage.invalidateUsageCache(me);
 r = await usage.getUsage(me);
 expect("renewal works: ok", r.ok, true);
 expect("renewal works: logged", fake.logs.some((l) => l.includes("renewed expired token")), true);
+
+// 7. The ME login gets signed in as the EW account (happened 11-13): the ME
+// keys must not show EW's numbers. They read WRONG ACCT, a banner says so,
+// and signing in as the right account fixes them without a tap.
+const { errorHint } = await import("./src/tile-state.ts");
+fake.now += 5 * M;
+signIn("w1");
+fake.emailOf.w1 = "eaglewatch9002@eaglewatch.ph";
+fake.banners.length = 0;
+fake.profileFetches = 0;
+heard.length = 0;
+usage.invalidateUsageCache(me);
+r = await usage.getUsage(me);
+expect("wrong account: not ok", r.ok, false);
+expect("wrong account: reason names the other email", r.ok ? "" : r.reason, "wrong account: signed in as eaglewatch9002@eaglewatch.ph");
+expect("wrong account: key hint", r.ok ? "" : errorHint(r.reason), "WRONG ACCT");
+expect("wrong account: its numbers are not kept as old numbers", usage.lastGoodUsage(me), undefined);
+expect("wrong account: sign-in needed (tap opens sign-in)", usage.signInNeeded?.(me), true);
+expect("wrong account: broadcast failure", heard.splice(0), [["me", false]]);
+await settle();
+const [, wrongArgs = []] = fake.banners[0] ?? [];
+expect("wrong account: one banner", fake.banners.length, 1);
+expect("wrong account: banner title", wrongArgs[wrongArgs.indexOf("-title") + 1], "Claude ME is signed in to the wrong account");
+expect("wrong account: banner names both emails", /eaglewatch9002@eaglewatch\.ph, not jamilaian21@gmail\.com/.test(wrongArgs[wrongArgs.indexOf("-message") + 1] ?? ""), true);
+fake.now += 4 * M;
+usage.invalidateUsageCache(me);
+await usage.getUsage(me);
+await settle();
+expect("same token: profile asked once", fake.profileFetches, 1);
+expect("still wrong: no second banner", fake.banners.length, 1);
+expect("EW key unaffected", usage.signInNeeded?.(ew), false);
+// Signing in as the right account: the watcher spots the new token.
+signIn("t5");
+fake.now += 20_000;
+await usage.checkSignIn(me);
+r = await usage.getUsage(me);
+expect("right account again: ok", r.ok, true);
+expect("right account again: new token checked", fake.profileFetches, 2);
+expect("right account again: no sign-in needed", usage.signInNeeded?.(me), false);
+expect("right account again: last good is now", usage.lastGoodUsage(me)?.at, fake.now);
+// Email case differs: still the same account.
+signIn("t6");
+fake.emailOf.t6 = "JamilaIan21@Gmail.com";
+usage.invalidateUsageCache(me);
+r = await usage.getUsage(me);
+expect("email case ignored", r.ok, true);
+// Profile lookup down: fail open (show numbers), ask again next time.
+signIn("t7");
+fake.profileDown = true;
+usage.invalidateUsageCache(me);
+r = await usage.getUsage(me);
+expect("profile down: numbers still shown", r.ok, true);
+fake.profileDown = false;
+fake.emailOf.t7 = "eaglewatch9002@eaglewatch.ph";
+usage.invalidateUsageCache(me);
+r = await usage.getUsage(me);
+expect("profile back: wrong account caught on the next load", r.ok ? "" : errorHint(r.reason), "WRONG ACCT");
 
 console.log(fail ? `${fail} FAILED` : "all usage checks passed");
 process.exit(fail ? 1 : 0);

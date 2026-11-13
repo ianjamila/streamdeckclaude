@@ -12,7 +12,7 @@ import {
   type Account,
 } from "./accounts.js";
 import { findBinary } from "./terminal.js";
-import { needsAction } from "./tile-state.js";
+import { needsAction, WRONG_ACCOUNT_PREFIX } from "./tile-state.js";
 
 // On macOS Claude Code keeps its OAuth credentials in the login Keychain
 // instead of the JSON file. The first read may trigger a macOS "allow access"
@@ -20,6 +20,8 @@ import { needsAction } from "./tile-state.js";
 const KEYCHAIN_TIMEOUT_MS = 120_000;
 const execFileAsync = promisify(execFile);
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+// Says which Claude account a token belongs to (account.email).
+const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const REFRESH_URL = "https://console.anthropic.com/v1/oauth/token";
 const BETA_HEADER = "oauth-2025-04-20";
 const CACHE_TTL_MS = 3 * 60_000;
@@ -143,6 +145,8 @@ type AccountState = {
   // Newest good response, kept so a tile can show it (marked old) through
   // a temporary failure instead of flipping to "!".
   lastGood?: UsageResponse;
+  // The account the current token belongs to, looked up once per token.
+  identity?: { token: string; email: string };
 };
 
 const states = new Map<string, AccountState>();
@@ -307,6 +311,43 @@ async function fetchOnce(token: string): Promise<{ status: number; body: unknown
   return { status: res.status, body };
 }
 
+// The email of the Claude account a token belongs to, or undefined if the
+// lookup failed (offline, server error, odd reply). Asked once per token: a
+// token never changes owner, and Claude Code swaps tokens every few hours.
+async function signedInEmail(account: Account, token: string): Promise<string | undefined> {
+  const state = stateFor(account);
+  if (state.identity?.token === token) return state.identity.email;
+  try {
+    const res = await fetch(PROFILE_URL, {
+      headers: { authorization: `Bearer ${token}`, "anthropic-beta": BETA_HEADER },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as { account?: { email?: unknown } };
+    const email = body.account?.email;
+    if (typeof email !== "string" || !email) return undefined;
+    state.identity = { token, email };
+    streamDeck.logger.info(`usage[${account.id}]: token belongs to ${email}`);
+    return email;
+  } catch {
+    return undefined;
+  }
+}
+
+// The login a key reads must be the account it is labelled with: if the
+// ME login (~/.claude) gets signed in as the EW account, the ME keys would
+// otherwise show EW's numbers as if they were ME's. Fails open: when the
+// lookup itself fails the numbers are shown and it is asked again next time.
+async function checkIdentity(account: Account, token: string): Promise<Err | undefined> {
+  const email = await signedInEmail(account, token);
+  if (!email || email.trim().toLowerCase() === account.email.toLowerCase()) return undefined;
+  const state = stateFor(account);
+  // Numbers from the wrong account must never come back as "old" numbers.
+  state.lastGood = undefined;
+  state.lastSuccessAt = 0;
+  return { ok: false, reason: `${WRONG_ACCOUNT_PREFIX}${email}` };
+}
+
 async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
   let creds: Credentials;
   let source: CredentialSource;
@@ -360,6 +401,8 @@ async function loadUsage(account: Account): Promise<Result<UsageResponse>> {
   if (res.status < 200 || res.status >= 300) {
     return { ok: false, reason: `HTTP ${res.status}: ${JSON.stringify(res.body).slice(0, 200)}` };
   }
+  const wrong = await checkIdentity(account, creds.claudeAiOauth.accessToken);
+  if (wrong) return wrong;
   return { ok: true, data: res.body as UsageResponse };
 }
 
